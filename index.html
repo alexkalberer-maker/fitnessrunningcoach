@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HYBRID — Training reimagined</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+  <!-- Header (only visible after onboarding) -->
+  <div id="header-section" class="hidden">
+    <div class="header">
+      <div class="logo">
+        <span class="logo-dot"></span>
+        HYBRID
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" onclick="showSettings()" title="Settings">⚙</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main content area -->
+  <div id="content"></div>
+</div>
+
+<!-- Bottom nav (only visible after onboarding) -->
+<div id="bottom-nav" class="bottom-nav hidden">
+  <button class="nav-item active" data-tab="home" onclick="switchTab('home')">📅 Plan</button>
+  <button class="nav-item" data-tab="stats" onclick="switchTab('stats')">📊 Stats</button>
+  <button class="nav-item" data-tab="profile" onclick="switchTab('profile')">👤 Profil</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
