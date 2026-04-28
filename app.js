@@ -1,3 +1,39 @@
+// === CONFIG ===
+// Alle anpassbaren Werte zentral - ändere hier statt im Code
+
+const CONFIG = {
+  // Workout-Dauer in Minuten
+  WORKOUT_DURATIONS: {
+    KRAFT_BASE: 45,           // Basis-Dauer Krafttraining
+    KRAFT_ADVANCED_BONUS: 15, // Extra Min für Advanced User
+    LAUF_LONG: 90,            // Long Run
+    LAUF_INTERVAL: 60,        // Intervall-Training
+    LAUF_Z2: 45,              // Z2 Grundlagen-Lauf
+    LAUF_TEMPO: 50,           // Tempo-Lauf
+    RAD_Z2: 60,               // Lockerer Rad
+    RAD_LONG: 90,             // Long Ride
+    SCHWIMMEN: 45             // Schwimm-Einheit
+  },
+
+  // Trainings-Empfehlungen
+  RECOMMENDED_LIMITS: {
+    MAX_WEEKLY_UNITS: 7,                     // Warnung bei mehr als X
+    MIN_REST_HOURS_LEGS_TO_INTERVAL: 24      // Pause Legs → Intervall (Doku — Plan-Generator hält Regel implizit ein)
+  },
+
+  // Standardwerte beim Onboarding
+  DEFAULT_VOLUMES: {
+    KRAFT: 3,
+    LAUF: 2,
+    RAD: 1,
+    SCHWIMM: 0
+  },
+
+  // Plan-Generator Verhalten
+  STREAK_LOOKBACK_DAYS: 30,   // Wie weit zurück Streak prüfen
+  PLAN_GEN_DELAY_MS: 1800     // Loading-Animation beim Plan generieren
+};
+
 // === STATE & PERSISTENCE ===
 
 let state = {
@@ -9,7 +45,12 @@ let state = {
     sports: [],
     equipment: 'gym',
     location: 'gym',
-    weeklyVolume: { kraft: 3, lauf: 2, rad: 1, schwimm: 0 },
+    weeklyVolume: {
+      kraft: CONFIG.DEFAULT_VOLUMES.KRAFT,
+      lauf: CONFIG.DEFAULT_VOLUMES.LAUF,
+      rad: CONFIG.DEFAULT_VOLUMES.RAD,
+      schwimm: CONFIG.DEFAULT_VOLUMES.SCHWIMM
+    },
     experience: 'intermediate',
     goal: 'recomp',
     daysPerWeek: 5
@@ -175,7 +216,7 @@ function generatePlan(data) {
       id: `kraft-${dayIdx}`,
       type: 'kraft',
       title: `Kraft — ${split === 'push' ? 'Push' : split === 'pull' ? 'Pull' : split === 'legs' ? 'Legs' : split === 'upper' ? 'Oberkörper' : 'Ganzkörper'}`,
-      duration: 45 + (data.experience === 'advanced' ? 15 : 0),
+      duration: CONFIG.WORKOUT_DURATIONS.KRAFT_BASE + (data.experience === 'advanced' ? CONFIG.WORKOUT_DURATIONS.KRAFT_ADVANCED_BONUS : 0),
       time: 'Abend',
       exercises: exercises.map((e, idx) => ({
         id: `ex-${dayIdx}-${idx}`,
@@ -244,7 +285,7 @@ function generatePlan(data) {
         id: `rad-${dayIdx}`,
         type: 'rad',
         title: i === 0 ? 'Rad — Z2 Grundlage' : i === 1 ? 'Rad — Tempo' : 'Rad — Long',
-        duration: i === 2 ? 90 : 60,
+        duration: i === 2 ? CONFIG.WORKOUT_DURATIONS.RAD_LONG : CONFIG.WORKOUT_DURATIONS.RAD_Z2,
         time: isCombined ? 'Nach Kraft' : 'Morgen',
         details: i === 0 ? 'HF-Zone 2, locker' : i === 1 ? 'Sweet Spot 88-93% FTP' : 'Lockerer Long Ride',
         exercises: []
@@ -260,7 +301,7 @@ function generatePlan(data) {
         id: `schwimm-${dayIdx}`,
         type: 'schwimm',
         title: 'Schwimmen — Technik & Ausdauer',
-        duration: 45,
+        duration: CONFIG.WORKOUT_DURATIONS.SCHWIMMEN,
         time: 'Morgen',
         details: i === 0 ? '8x100m + Technik' : '2000m Long Swim',
         exercises: []
@@ -275,25 +316,25 @@ function createLaufWorkout(type, dayIdx, data) {
   const workouts = {
     long: {
       title: 'Long Run',
-      duration: 90,
+      duration: CONFIG.WORKOUT_DURATIONS.LAUF_LONG,
       details: 'Lockeres Tempo, HF-Zone 2',
       time: 'Morgen'
     },
     intervall: {
       title: 'Intervall — Speed',
-      duration: 60,
+      duration: CONFIG.WORKOUT_DURATIONS.LAUF_INTERVAL,
       details: '6×1km @ Renntempo / 90s Pause',
       time: 'Morgen'
     },
     z2: {
       title: 'Z2 — Grundlage',
-      duration: 45,
+      duration: CONFIG.WORKOUT_DURATIONS.LAUF_Z2,
       details: 'Locker, Konversationstempo',
       time: 'Morgen'
     },
     tempo: {
       title: 'Tempo — Schwellentempo',
-      duration: 50,
+      duration: CONFIG.WORKOUT_DURATIONS.LAUF_TEMPO,
       details: '20-30 Min Tempolauf',
       time: 'Morgen'
     }
@@ -560,11 +601,11 @@ function renderOnboarding() {
     });
     
     const total = Object.entries(vol).filter(([k]) => sports.includes(k)).reduce((s, [_, v]) => s + parseInt(v), 0);
-    const tooMuch = total > 7;
+    const tooMuch = total > CONFIG.RECOMMENDED_LIMITS.MAX_WEEKLY_UNITS;
     
     html += `
       <div style="text-align: center; margin: 16px 0; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: ${tooMuch ? 'var(--danger)' : 'var(--text-secondary)'};">
-        Total: ${total} Einheiten / Woche ${tooMuch ? '⚠ zu viel — wir empfehlen max. 7' : ''}
+        Total: ${total} Einheiten / Woche ${tooMuch ? `⚠ zu viel — wir empfehlen max. ${CONFIG.RECOMMENDED_LIMITS.MAX_WEEKLY_UNITS}` : ''}
       </div>
       <div class="btn-row">
         <button class="btn btn-secondary" onclick="prevStep()">Zurück</button>
@@ -616,7 +657,7 @@ function renderOnboarding() {
       saveState();
       state.onboardingStep++;
       renderOnboarding();
-    }, 1800);
+    }, CONFIG.PLAN_GEN_DELAY_MS);
   }
   
   else if (step === 'complete') {
@@ -847,7 +888,7 @@ function getDateForDayIndex(idx) {
 function getStreak() {
   let streak = 0;
   const today = new Date();
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < CONFIG.STREAK_LOOKBACK_DAYS; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
     const key = d.toISOString().split('T')[0];
