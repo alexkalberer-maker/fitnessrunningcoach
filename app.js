@@ -1,6 +1,4 @@
-// ============================================================
-// STATE & PERSISTENCE
-// ============================================================
+// === STATE & PERSISTENCE ===
 
 let state = {
   user: null,
@@ -46,9 +44,7 @@ async function loadState() {
   return false;
 }
 
-// ============================================================
-// PLAN GENERATOR
-// ============================================================
+// === PLAN GENERATOR ===
 
 const SPORT_INFO = {
   kraft: { icon: '💪', label: 'Kraft', color: 'kraft' },
@@ -310,9 +306,7 @@ function createLaufWorkout(type, dayIdx, data) {
   };
 }
 
-// ============================================================
-// ONBOARDING
-// ============================================================
+// === ONBOARDING ===
 
 const ONBOARDING_STEPS = [
   'welcome',
@@ -680,9 +674,7 @@ function finishOnboarding() {
   renderHome();
 }
 
-// ============================================================
-// HOME / DASHBOARD
-// ============================================================
+// === HOME / DASHBOARD ===
 
 function getTodayKey() {
   return new Date().toISOString().split('T')[0];
@@ -902,9 +894,7 @@ function getMoodLabel(mood) {
   return labels[mood] || 'okay';
 }
 
-// ============================================================
-// CHECK-IN MODAL
-// ============================================================
+// === CHECK-IN MODAL ===
 
 function openCheckin() {
   const todayKey = getTodayKey();
@@ -1011,9 +1001,7 @@ function saveCheckin() {
   renderHome();
 }
 
-// ============================================================
-// WORKOUT TRACKING MODAL
-// ============================================================
+// === WORKOUT TRACKING ===
 
 function openWorkout(workoutId, dayKey) {
   // Find workout
@@ -1171,9 +1159,7 @@ function completeWorkout(dayKey, workoutId) {
   renderHome();
 }
 
-// ============================================================
-// DAY DETAIL
-// ============================================================
+// --- Day Detail ---
 
 function openDay(idx) {
   const day = state.currentPlan[idx];
@@ -1203,9 +1189,7 @@ function openDay(idx) {
   showModal(html, `${day.day} · ${dayDate.toLocaleDateString('de-CH', { day: 'numeric', month: 'long' })}`);
 }
 
-// ============================================================
-// STATS PAGE
-// ============================================================
+// === STATS & PROFILE ===
 
 function renderStats() {
   state.currentTab = 'stats';
@@ -1311,9 +1295,7 @@ function renderStats() {
   document.getElementById('content').innerHTML = html;
 }
 
-// ============================================================
-// PROFILE PAGE
-// ============================================================
+// --- Profile ---
 
 function renderProfile() {
   state.currentTab = 'profile';
@@ -1405,9 +1387,7 @@ async function resetApp() {
   }
 }
 
-// ============================================================
-// NAV / TABS
-// ============================================================
+// --- Nav / Tabs ---
 
 function switchTab(tab) {
   if (tab === 'home') renderHome();
@@ -1421,9 +1401,7 @@ function updateNav() {
   });
 }
 
-// ============================================================
-// MODAL HELPERS
-// ============================================================
+// === MODAL HELPERS ===
 
 function showModal(content, title = '') {
   closeModal();
@@ -1472,9 +1450,7 @@ function showSettings() {
   `, 'Einstellungen');
 }
 
-// ============================================================
-// INIT
-// ============================================================
+// === INIT ===
 
 (async function init() {
   const loaded = await loadState();
