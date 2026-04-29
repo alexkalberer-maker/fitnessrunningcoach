@@ -426,19 +426,36 @@ function generatePlan(data) {
   const plan = {};
   dayNames.forEach((d, i) => { plan[i] = { day: d, workouts: [] }; });
 
-  // Allowed training days; Mon=0 … Sun=6
   const tDays = (data.trainingDays && data.trainingDays.length > 0)
     ? [...data.trainingDays].sort((a, b) => a - b)
     : [0, 1, 2, 3, 4, 5, 6];
 
   const hasSport = s => !data.sports || data.sports.includes(s);
-  const nKraft   = hasSport('kraft')  ? (data.weeklyVolume.kraft  || 0) : 0;
-  const nLauf    = hasSport('lauf')   ? (data.weeklyVolume.lauf   || 0) : 0;
-  const nRad     = hasSport('rad')    ? (data.weeklyVolume.rad    || 0) : 0;
-  const nSchwimm = hasSport('schwimm')? (data.weeklyVolume.schwimm || 0) : 0;
-  const weekIdx = data._weekIndex || 0;
+  const weekIdx  = data._weekIndex || 0;
+  const phase    = getTrainingPhase(data, weekIdx);
+  const isRaceGoal = data.goal === 'race';
+  const raceType = data.race?.type || null;
+  const isTri    = raceType && raceType.includes('tri');
 
-  // Pick n evenly-spread indices from tDays, honouring exclusions
+  // Taper: reduce volumes
+  const taperFactor = phase === 'taper'
+    ? (weekIdx % 2 === 0 ? 0.7 : 0.5)  // week 1: -30%, week 2: -50%
+    : 1.0;
+
+  function tapered(n) { return Math.max(phase === 'taper' ? 1 : 0, Math.round(n * taperFactor)); }
+
+  let nKraft   = hasSport('kraft')  ? tapered(data.weeklyVolume.kraft  || 0) : 0;
+  let nLauf    = hasSport('lauf')   ? tapered(data.weeklyVolume.lauf   || 0) : 0;
+  let nRad     = hasSport('rad')    ? tapered(data.weeklyVolume.rad    || 0) : 0;
+  let nSchwimm = hasSport('schwimm')? tapered(data.weeklyVolume.schwimm|| 0) : 0;
+
+  // Taper: cap kraft at 1
+  if (phase === 'taper') nKraft = Math.min(nKraft, 1);
+
+  // Peak: cap kraft at 2 (recovery focus)
+  if (phase === 'peak') nKraft = Math.min(nKraft, 2);
+
+  // Pick n evenly-spread days from tDays
   function pickSpread(n, exclude = []) {
     const pool = tDays.filter(d => !exclude.includes(d));
     if (!pool.length || n <= 0) return [];
@@ -448,7 +465,6 @@ function generatePlan(data) {
       const d = pool[Math.min(Math.round(i * step), pool.length - 1)];
       if (!result.includes(d)) result.push(d);
     }
-    // Fill any missing slots
     for (const d of pool) {
       if (result.length >= n) break;
       if (!result.includes(d)) result.push(d);
@@ -475,104 +491,151 @@ function generatePlan(data) {
       duration: CONFIG.WORKOUT_DURATIONS.KRAFT_BASE + (data.experience === 'advanced' ? CONFIG.WORKOUT_DURATIONS.KRAFT_ADVANCED_BONUS : 0),
       time: 'Abend',
       exercises: exercises.map((e, idx) => ({ id: `ex-${dayIdx}-${idx}`, ...e })),
-      isLegs: split === 'legs' || split === 'full'
+      isLegs: split === 'legs' || split === 'full',
+      isHard: false
     });
   });
 
   const legsDays = kraftDays.filter((_, i) => splits[i] === 'legs' || splits[i] === 'full');
   const freeDays = tDays.filter(d => !kraftDays.includes(d));
 
+  // Helper: is the day directly after a hard workout?
+  function isAfterHard(d) {
+    const prev = d - 1;
+    return plan[prev]?.workouts.some(w => w.isHard || w.isLegs);
+  }
+
+  // Helper: next free day without lauf, optionally excluding hard-day-after
+  function nextFreeDay(exclude = [], noHardAfter = false) {
+    return freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf' || w.type === 'brick')
+        && !exclude.includes(d)
+        && !(noHardAfter && isAfterHard(d)))
+      ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf' || w.type === 'brick') && !exclude.includes(d));
+  }
+
   // ── LAUF ─────────────────────────────────────────────────────────────
   if (nLauf > 0) {
-    const laufTypes = ['long', 'intervall', 'z2', 'tempo'].slice(0, nLauf);
-    const longDuration = CONFIG.LONG_RUN_DURATIONS[weekIdx] || CONFIG.WORKOUT_DURATIONS.LAUF_LONG;
+    const laufTypes = selectLaufTypes(phase, nLauf, isRaceGoal, raceType);
+    const longDuration = getLongRunDuration(phase, weekIdx);
+    const usedLaufDays = [];
 
-    // Long Run: last free training day whose previous training day has no legs
-    if (laufTypes.includes('long')) {
+    // Long Run: prefer last free training day, guard against legs-day-before
+    if (laufTypes.includes('long_run') || laufTypes.includes('long')) {
       const revFree = [...freeDays].reverse();
       let longDay = revFree.find(d => {
         const prevT = tDays[tDays.indexOf(d) - 1];
-        return prevT === undefined || !legsDays.includes(prevT);
+        return (prevT === undefined || !legsDays.includes(prevT)) && !usedLaufDays.includes(d);
       });
       if (longDay === undefined) longDay = revFree[0] ?? tDays[tDays.length - 1];
-      const w = createLaufWorkout('long', longDay, data);
+      const w = createLaufWorkout('long_run', longDay, data);
       w.duration = longDuration;
       plan[longDay].workouts.push(w);
+      usedLaufDays.push(longDay);
+      // Mark day after long run as "no hard" by tagging rest
+      const afterLong = longDay + 1;
+      if (plan[afterLong] && !tDays.includes(afterLong)) {
+        plan[afterLong]._afterLongRun = true;
+      }
     }
 
-    // Intervall: free day not directly after a legs day
-    if (laufTypes.includes('intervall')) {
-      const notAfterLegs = freeDays.filter(d => {
-        const prev = d - 1;
-        return !legsDays.includes(prev) && !plan[d].workouts.some(w => w.type === 'lauf');
-      });
-      const day = notAfterLegs[0]
-        ?? freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'))
-        ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'));
-      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('intervall', day, data));
-    }
+    // Hard workout types: intervall, tempo, race_pace → go on non-legs, non-afterHard days
+    const hardTypes = laufTypes.filter(t => ['interval_short','interval_long','tempo_run','race_pace','hill_repeats'].includes(t));
+    hardTypes.forEach(type => {
+      const day = freeDays.find(d =>
+        !usedLaufDays.includes(d) &&
+        !plan[d].workouts.some(w => w.type === 'lauf') &&
+        !isAfterHard(d) &&
+        !legsDays.includes(d - 1)
+      ) ?? nextFreeDay(usedLaufDays, false);
+      if (day !== undefined) {
+        plan[day].workouts.push(createLaufWorkout(type, day, data));
+        usedLaufDays.push(day);
+      }
+    });
 
-    // Z2: free day preferred; smart-pair with non-legs kraft day if no free day left
-    if (laufTypes.includes('z2')) {
-      const freeForZ2 = freeDays.filter(d => !plan[d].workouts.some(w => w.type === 'lauf'));
-      let day = freeForZ2[0];
+    // Easy types: easy_run, fartlek, progression_run → remaining free days or smart-pair
+    const easyTypes = laufTypes.filter(t => ['easy_run','fartlek','progression_run','z2'].includes(t));
+    easyTypes.forEach(type => {
+      let day = freeDays.find(d => !usedLaufDays.includes(d) && !plan[d].workouts.some(w => w.type === 'lauf'));
       if (day === undefined) {
-        // Smart-pair: Z2 is low-intensity, safe to add after a non-legs kraft session
+        // Smart-pair with non-legs kraft day
         day = kraftDays.find(d => !legsDays.includes(d) && !plan[d].workouts.some(w => w.type === 'lauf'));
       }
-      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('z2', day, data));
-    }
+      if (day !== undefined) {
+        plan[day].workouts.push(createLaufWorkout(type === 'z2' ? 'easy_run' : type, day, data));
+        usedLaufDays.push(day);
+      }
+    });
+  }
 
-    // Tempo: next available free day
-    if (laufTypes.includes('tempo')) {
-      const day = freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'))
-        ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'));
-      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('tempo', day, data));
+  // ── BRICK (Triathlon only, BUILD/PEAK) ────────────────────────────────
+  if (isTri && nRad > 0 && nLauf > 0 && ['build', 'peak'].includes(phase)) {
+    // Place one brick on a weekend day if available, else last free day
+    const brickDay = [5, 6].find(d => tDays.includes(d) && !plan[d].workouts.some(w => w.type === 'brick'))
+      ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'brick'));
+    if (brickDay !== undefined && !plan[brickDay].workouts.some(w => w.type === 'brick')) {
+      plan[brickDay].workouts.push(createBrickWorkout(brickDay, data, phase));
+      // A brick replaces one rad and one lauf unit
+      nRad   = Math.max(0, nRad   - 1);
+      nLauf  = Math.max(0, nLauf  - 1);
     }
   }
 
   // ── RAD ──────────────────────────────────────────────────────────────
   if (nRad > 0) {
-    const radTypes = ['z2', 'tempo', 'long'].slice(0, nRad);
+    const radTypes = selectRadTypes(phase, nRad);
     radTypes.forEach(type => {
-      const freeForRad = tDays.filter(d => !plan[d].workouts.some(w => w.type === 'rad' || w.type === 'lauf'));
-      let day = freeForRad.find(d => !kraftDays.includes(d));
+      const freeForRad = tDays.filter(d =>
+        !plan[d].workouts.some(w => w.type === 'rad' || w.type === 'brick') &&
+        !plan[d].workouts.some(w => w.type === 'lauf')
+      );
+      // Hard rad types: don't place after hard day
+      const needsRest = ['sweet_spot', 'threshold', 'vo2max'].includes(type);
+      let day = freeForRad.find(d => !kraftDays.includes(d) && !(needsRest && isAfterHard(d)));
       if (day === undefined) {
-        // Smart-pair: Z2/Tempo rad after non-legs kraft
         day = kraftDays.find(d => !legsDays.includes(d) && !plan[d].workouts.some(w => w.type === 'rad'));
       }
       if (day === undefined) day = freeForRad[0] ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'rad'));
       if (day === undefined) return;
       const isCombined = plan[day].workouts.some(w => w.type === 'kraft');
-      plan[day].workouts.push({
-        id: `rad-${day}`,
-        type: 'rad',
-        title: type === 'z2' ? 'Rad — Z2 Grundlage' : type === 'tempo' ? 'Rad — Tempo' : 'Rad — Long',
-        duration: type === 'long' ? CONFIG.WORKOUT_DURATIONS.RAD_LONG : CONFIG.WORKOUT_DURATIONS.RAD_Z2,
-        time: isCombined ? 'Nach Kraft' : 'Morgen',
-        details: type === 'z2' ? 'HF-Zone 2, locker' : type === 'tempo' ? 'Sweet Spot 88-93% FTP' : 'Lockerer Long Ride',
-        exercises: []
-      });
+      const workout = createRadWorkout(type, day, data);
+      if (isCombined) workout.time = 'Nach Kraft';
+      plan[day].workouts.push(workout);
     });
   }
 
   // ── SCHWIMM ───────────────────────────────────────────────────────────
   if (nSchwimm > 0) {
+    const schwimmTypes = nSchwimm >= 3 ? ['technik', 'ausdauer', 'strecke'] : nSchwimm === 2 ? ['technik', 'ausdauer'] : ['technik'];
     for (let i = 0; i < nSchwimm; i++) {
       const freeForSchwimm = tDays.filter(d => !plan[d].workouts.some(w => w.type === 'schwimm'));
-      const day = freeForSchwimm.find(d => !kraftDays.includes(d))
-        ?? freeForSchwimm[0]
-        ?? tDays[i % tDays.length];
+      // Schwimm not on same day as hard run
+      const day = freeForSchwimm.find(d =>
+        !kraftDays.includes(d) && !plan[d].workouts.some(w => w.isHard)
+      ) ?? freeForSchwimm[0] ?? tDays[i % tDays.length];
+      const sType = schwimmTypes[i] || 'technik';
       plan[day].workouts.push({
         id: `schwimm-${day}`,
         type: 'schwimm',
-        title: 'Schwimmen — Technik & Ausdauer',
-        duration: CONFIG.WORKOUT_DURATIONS.SCHWIMMEN,
+        title: sType === 'strecke' ? 'Schwimmen — Long Swim' : sType === 'ausdauer' ? 'Schwimmen — Ausdauer' : 'Schwimmen — Technik',
+        duration: CONFIG.WORKOUT_DURATIONS.SCHWIMMEN + (sType === 'strecke' ? 15 : sType === 'ausdauer' ? 5 : 0),
         time: 'Morgen',
-        details: i === 0 ? '8x100m + Technik' : '2000m Long Swim',
-        exercises: []
+        details: sType === 'strecke' ? '2000m Freistil — gleichmässiges Tempo' : sType === 'ausdauer' ? '10×100m + 400m Lagen' : '8×100m + Drilltechnik',
+        exercises: [],
+        isHard: false
       });
     }
+  }
+
+  // ── HARD/EASY ROTATION POST-CHECK ─────────────────────────────────────
+  // Ensure no 3 consecutive hard days (check and flag only — plan stays intact)
+  let hardStreak = 0;
+  for (let d = 0; d < 7; d++) {
+    const hasHard = plan[d].workouts.some(w => w.isHard || w.isLegs);
+    if (hasHard) hardStreak++;
+    else hardStreak = 0;
+    plan[d]._hasHard = hasHard;
+    plan[d]._hardStreak = hardStreak;
   }
 
   return plan;
