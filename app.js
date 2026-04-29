@@ -1757,7 +1757,7 @@ function renderStats() {
           const height = (v / total) * 100;
           return `<div class="bar-item">
             <div class="bar ${type}" style="height: ${height}%"></div>
-            <div class="bar-label">${SPORT_INFO[type].label.substr(0, 4)}</div>
+            <div class="bar-label">${SPORT_INFO[type].label}</div>
           </div>`;
         }).join('')}
       </div>
