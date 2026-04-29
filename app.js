@@ -36,6 +36,19 @@ const CONFIG = {
 
 // === STATE & PERSISTENCE ===
 
+const STORAGE_KEY = 'hybrid-app-state';
+
+const storageAvailable = (() => {
+  try {
+    const t = '__hybrid_test__';
+    localStorage.setItem(t, '1');
+    localStorage.removeItem(t);
+    return true;
+  } catch (e) {
+    return false;
+  }
+})();
+
 let state = {
   user: null,
   currentTab: 'home',
@@ -60,9 +73,10 @@ let state = {
   currentPlan: null
 };
 
-async function saveState() {
+function saveState() {
+  if (!storageAvailable) return;
   try {
-    await window.storage.set('app-state', JSON.stringify({
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
       user: state.user,
       todayCheckin: state.todayCheckin,
       workoutLogs: state.workoutLogs,
@@ -71,18 +85,19 @@ async function saveState() {
   } catch (err) { console.error('Save failed:', err); }
 }
 
-async function loadState() {
+function loadState() {
+  if (!storageAvailable) return false;
   try {
-    const result = await window.storage.get('app-state');
-    if (result && result.value) {
-      const saved = JSON.parse(result.value);
-      Object.assign(state, saved);
-      return true;
-    }
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    Object.assign(state, saved);
+    return true;
   } catch (err) {
-    // Key doesn't exist yet - normal for first run
+    console.warn('State korrupt — starte mit Onboarding:', err);
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    return false;
   }
-  return false;
 }
 
 // === PLAN GENERATOR ===
@@ -399,7 +414,7 @@ function renderOnboarding() {
       <h2 class="step-title">Welche <span class="accent">Sportarten</span>?</h2>
       <p class="step-desc">Mehrere möglich — du kannst sie später anpassen.</p>
       <div class="choices">
-        <div class="choice ${sports.includes('kraft') ? 'selected' : ''}" onclick="toggleSport('kraft')">
+        <div class="choice ${sports.includes('kraft') ? 'selected' : ''}" data-choice-group="sports" data-choice-value="kraft" onclick="toggleSport('kraft')">
           <div class="choice-icon">💪</div>
           <div class="choice-content">
             <div class="choice-title">Krafttraining</div>
@@ -407,7 +422,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${sports.includes('lauf') ? 'selected' : ''}" onclick="toggleSport('lauf')">
+        <div class="choice ${sports.includes('lauf') ? 'selected' : ''}" data-choice-group="sports" data-choice-value="lauf" onclick="toggleSport('lauf')">
           <div class="choice-icon">🏃</div>
           <div class="choice-content">
             <div class="choice-title">Laufen</div>
@@ -415,7 +430,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${sports.includes('rad') ? 'selected' : ''}" onclick="toggleSport('rad')">
+        <div class="choice ${sports.includes('rad') ? 'selected' : ''}" data-choice-group="sports" data-choice-value="rad" onclick="toggleSport('rad')">
           <div class="choice-icon">🚴</div>
           <div class="choice-content">
             <div class="choice-title">Radfahren</div>
@@ -423,7 +438,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${sports.includes('schwimm') ? 'selected' : ''}" onclick="toggleSport('schwimm')">
+        <div class="choice ${sports.includes('schwimm') ? 'selected' : ''}" data-choice-group="sports" data-choice-value="schwimm" onclick="toggleSport('schwimm')">
           <div class="choice-icon">🏊</div>
           <div class="choice-content">
             <div class="choice-title">Schwimmen</div>
@@ -434,7 +449,7 @@ function renderOnboarding() {
       </div>
       <div class="btn-row">
         <button class="btn btn-secondary" onclick="prevStep()">Zurück</button>
-        <button class="btn btn-primary" onclick="nextStep()" ${sports.length === 0 ? 'disabled' : ''}>Weiter</button>
+        <button class="btn btn-primary" id="onboarding-next-btn" onclick="nextStep()" ${sports.length === 0 ? 'disabled' : ''}>Weiter</button>
       </div>
     </div>
     `;
@@ -446,7 +461,7 @@ function renderOnboarding() {
       <h2 class="step-title">Wo trainierst du <span class="accent">Kraft</span>?</h2>
       <p class="step-desc">Davon hängt ab welche Übungen wir dir vorschlagen.</p>
       <div class="choices">
-        <div class="choice ${loc === 'gym' ? 'selected' : ''}" onclick="setLocation('gym')">
+        <div class="choice ${loc === 'gym' ? 'selected' : ''}" data-choice-group="location" data-choice-value="gym" onclick="setLocation('gym')">
           <div class="choice-icon">🏋️</div>
           <div class="choice-content">
             <div class="choice-title">Fitnessstudio</div>
@@ -454,7 +469,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${loc === 'home' ? 'selected' : ''}" onclick="setLocation('home')">
+        <div class="choice ${loc === 'home' ? 'selected' : ''}" data-choice-group="location" data-choice-value="home" onclick="setLocation('home')">
           <div class="choice-icon">🏠</div>
           <div class="choice-content">
             <div class="choice-title">Zuhause / Bodyweight</div>
@@ -462,7 +477,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${loc === 'outdoor' ? 'selected' : ''}" onclick="setLocation('outdoor')">
+        <div class="choice ${loc === 'outdoor' ? 'selected' : ''}" data-choice-group="location" data-choice-value="outdoor" onclick="setLocation('outdoor')">
           <div class="choice-icon">🌳</div>
           <div class="choice-content">
             <div class="choice-title">Outdoor / Calisthenics</div>
@@ -485,7 +500,7 @@ function renderOnboarding() {
       <h2 class="step-title">Dein <span class="accent">Level</span>?</h2>
       <p class="step-desc">Ehrlich sein — wir passen die Intensität an.</p>
       <div class="choices">
-        <div class="choice ${exp === 'beginner' ? 'selected' : ''}" onclick="setExperience('beginner')">
+        <div class="choice ${exp === 'beginner' ? 'selected' : ''}" data-choice-group="experience" data-choice-value="beginner" onclick="setExperience('beginner')">
           <div class="choice-icon">🌱</div>
           <div class="choice-content">
             <div class="choice-title">Einsteiger</div>
@@ -493,7 +508,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${exp === 'intermediate' ? 'selected' : ''}" onclick="setExperience('intermediate')">
+        <div class="choice ${exp === 'intermediate' ? 'selected' : ''}" data-choice-group="experience" data-choice-value="intermediate" onclick="setExperience('intermediate')">
           <div class="choice-icon">⚡</div>
           <div class="choice-content">
             <div class="choice-title">Fortgeschritten</div>
@@ -501,7 +516,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${exp === 'advanced' ? 'selected' : ''}" onclick="setExperience('advanced')">
+        <div class="choice ${exp === 'advanced' ? 'selected' : ''}" data-choice-group="experience" data-choice-value="advanced" onclick="setExperience('advanced')">
           <div class="choice-icon">🔥</div>
           <div class="choice-content">
             <div class="choice-title">Erfahren</div>
@@ -524,7 +539,7 @@ function renderOnboarding() {
       <h2 class="step-title">Dein <span class="accent">Hauptziel</span>?</h2>
       <p class="step-desc">Wir priorisieren dein Programm danach.</p>
       <div class="choices">
-        <div class="choice ${goal === 'recomp' ? 'selected' : ''}" onclick="setGoal('recomp')">
+        <div class="choice ${goal === 'recomp' ? 'selected' : ''}" data-choice-group="goal" data-choice-value="recomp" onclick="setGoal('recomp')">
           <div class="choice-icon">🎯</div>
           <div class="choice-content">
             <div class="choice-title">Body Recomposition</div>
@@ -532,7 +547,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${goal === 'race' ? 'selected' : ''}" onclick="setGoal('race')">
+        <div class="choice ${goal === 'race' ? 'selected' : ''}" data-choice-group="goal" data-choice-value="race" onclick="setGoal('race')">
           <div class="choice-icon">🏁</div>
           <div class="choice-content">
             <div class="choice-title">Wettkampf-Vorbereitung</div>
@@ -540,7 +555,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${goal === 'strength' ? 'selected' : ''}" onclick="setGoal('strength')">
+        <div class="choice ${goal === 'strength' ? 'selected' : ''}" data-choice-group="goal" data-choice-value="strength" onclick="setGoal('strength')">
           <div class="choice-icon">💪</div>
           <div class="choice-content">
             <div class="choice-title">Kraft & Muskelaufbau</div>
@@ -548,7 +563,7 @@ function renderOnboarding() {
           </div>
           <div class="choice-check"></div>
         </div>
-        <div class="choice ${goal === 'fitness' ? 'selected' : ''}" onclick="setGoal('fitness')">
+        <div class="choice ${goal === 'fitness' ? 'selected' : ''}" data-choice-group="goal" data-choice-value="fitness" onclick="setGoal('fitness')">
           <div class="choice-icon">✨</div>
           <div class="choice-content">
             <div class="choice-title">Allgemeine Fitness</div>
@@ -590,26 +605,26 @@ function renderOnboarding() {
                 <span>${s.label}</span>
               </div>
               <div class="slider-value">
-                ${vol[s.key]}<span class="slider-value-label">×/Wo</span>
+                <span data-slider-value="${s.key}">${vol[s.key]}</span><span class="slider-value-label">×/Wo</span>
               </div>
             </div>
-            <input type="range" min="0" max="${s.max}" value="${vol[s.key]}" 
+            <input type="range" min="0" max="${s.max}" value="${vol[s.key]}"
               oninput="updateVolume('${s.key}', this.value)">
           </div>
         `;
       }
     });
-    
+
     const total = Object.entries(vol).filter(([k]) => sports.includes(k)).reduce((s, [_, v]) => s + parseInt(v), 0);
     const tooMuch = total > CONFIG.RECOMMENDED_LIMITS.MAX_WEEKLY_UNITS;
-    
+
     html += `
-      <div style="text-align: center; margin: 16px 0; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: ${tooMuch ? 'var(--danger)' : 'var(--text-secondary)'};">
+      <div id="volume-total" style="text-align: center; margin: 16px 0; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: ${tooMuch ? 'var(--danger)' : 'var(--text-secondary)'};">
         Total: ${total} Einheiten / Woche ${tooMuch ? `⚠ zu viel — wir empfehlen max. ${CONFIG.RECOMMENDED_LIMITS.MAX_WEEKLY_UNITS}` : ''}
       </div>
       <div class="btn-row">
         <button class="btn btn-secondary" onclick="prevStep()">Zurück</button>
-        <button class="btn btn-primary" onclick="nextStep()" ${total === 0 ? 'disabled' : ''}>Weiter</button>
+        <button class="btn btn-primary" id="onboarding-next-btn" onclick="nextStep()" ${total === 0 ? 'disabled' : ''}>Weiter</button>
       </div>
     </div>
     `;
@@ -684,23 +699,52 @@ function prevStep() { if (state.onboardingStep > 0) { state.onboardingStep--; re
 function toggleSport(sport) {
   const sports = state.onboardingData.sports;
   const idx = sports.indexOf(sport);
-  if (idx >= 0) sports.splice(idx, 1);
+  const wasSelected = idx >= 0;
+  if (wasSelected) sports.splice(idx, 1);
   else sports.push(sport);
-  // Set volume to 0 for unselected
-  if (idx >= 0) state.onboardingData.weeklyVolume[sport] = 0;
+  if (wasSelected) state.onboardingData.weeklyVolume[sport] = 0;
   else if (state.onboardingData.weeklyVolume[sport] === 0) {
     state.onboardingData.weeklyVolume[sport] = sport === 'kraft' ? 3 : sport === 'lauf' ? 2 : 1;
   }
-  renderOnboarding();
+  const el = document.querySelector(`.choice[data-choice-group="sports"][data-choice-value="${sport}"]`);
+  if (el) el.classList.toggle('selected', !wasSelected);
+  const btn = document.getElementById('onboarding-next-btn');
+  if (btn) btn.disabled = sports.length === 0;
 }
 
-function setLocation(loc) { state.onboardingData.location = loc; renderOnboarding(); }
-function setExperience(exp) { state.onboardingData.experience = exp; renderOnboarding(); }
-function setGoal(goal) { state.onboardingData.goal = goal; renderOnboarding(); }
+function setLocation(loc) {
+  state.onboardingData.location = loc;
+  document.querySelectorAll('.choice[data-choice-group="location"]').forEach(c =>
+    c.classList.toggle('selected', c.dataset.choiceValue === loc));
+}
+
+function setExperience(exp) {
+  state.onboardingData.experience = exp;
+  document.querySelectorAll('.choice[data-choice-group="experience"]').forEach(c =>
+    c.classList.toggle('selected', c.dataset.choiceValue === exp));
+}
+
+function setGoal(goal) {
+  state.onboardingData.goal = goal;
+  document.querySelectorAll('.choice[data-choice-group="goal"]').forEach(c =>
+    c.classList.toggle('selected', c.dataset.choiceValue === goal));
+}
 
 function updateVolume(sport, val) {
   state.onboardingData.weeklyVolume[sport] = parseInt(val);
-  renderOnboarding();
+  const display = document.querySelector(`[data-slider-value="${sport}"]`);
+  if (display) display.textContent = val;
+  const sports = state.onboardingData.sports;
+  const vol = state.onboardingData.weeklyVolume;
+  const total = Object.entries(vol).filter(([k]) => sports.includes(k)).reduce((s, [_, v]) => s + parseInt(v), 0);
+  const tooMuch = total > CONFIG.RECOMMENDED_LIMITS.MAX_WEEKLY_UNITS;
+  const totalEl = document.getElementById('volume-total');
+  if (totalEl) {
+    totalEl.style.color = tooMuch ? 'var(--danger)' : 'var(--text-secondary)';
+    totalEl.textContent = `Total: ${total} Einheiten / Woche${tooMuch ? ` ⚠ zu viel — wir empfehlen max. ${CONFIG.RECOMMENDED_LIMITS.MAX_WEEKLY_UNITS}` : ''}`;
+  }
+  const btn = document.getElementById('onboarding-next-btn');
+  if (btn) btn.disabled = total === 0;
 }
 
 function completeOnboarding() {
@@ -1044,19 +1088,69 @@ function saveCheckin() {
 
 // === WORKOUT TRACKING ===
 
+// --- Helpers ---
+
+function findWorkout(workoutId, dayKey) {
+  // Custom workouts store their full metadata in the log
+  const logEntry = (state.workoutLogs[dayKey] || {})[workoutId];
+  if (logEntry && logEntry.isCustom) return logEntry.customMeta;
+  // Plan workouts
+  let found = null;
+  Object.values(state.currentPlan).forEach(day =>
+    day.workouts.forEach(w => { if (w.id === workoutId) found = w; })
+  );
+  return found;
+}
+
+function ensureLog(dayKey, workoutId) {
+  if (!state.workoutLogs[dayKey]) state.workoutLogs[dayKey] = {};
+  if (!state.workoutLogs[dayKey][workoutId]) {
+    state.workoutLogs[dayKey][workoutId] = { sets: {}, completed: false };
+  }
+  return state.workoutLogs[dayKey][workoutId];
+}
+
+// Returns the effective exercise list for this session (snapshot takes priority)
+function getEffectiveExercises(workout, log) {
+  return log.exercisesSnapshot || workout.exercises || [];
+}
+
+// Copy plan exercises into log snapshot so session edits don't touch the plan
+function ensureSnapshot(dayKey, workoutId, workout) {
+  const log = ensureLog(dayKey, workoutId);
+  if (!log.exercisesSnapshot) {
+    log.exercisesSnapshot = (workout.exercises || []).map(ex => ({ ...ex }));
+    saveState();
+  }
+  return log;
+}
+
+// Infer the split category from workout title for smart exercise filtering
+function inferSplitCategory(workout) {
+  const title = (workout.title || '').toLowerCase();
+  if (title.includes('push')) return 'push';
+  if (title.includes('pull')) return 'pull';
+  if (title.includes('legs') || title.includes('beine')) return 'legs';
+  if (title.includes('upper') || title.includes('oberkörper')) return 'upper';
+  return 'full';
+}
+
+function getLibraryKey(split, location) {
+  const loc = location === 'home' || location === 'outdoor' ? 'home' : 'gym';
+  // upper_home doesn't exist — fall back to full_home
+  const key = `${split}_${loc}`;
+  return EXERCISE_LIBRARY[key] ? key : `full_${loc}`;
+}
+
+// --- Main Workout Modal ---
+
 function openWorkout(workoutId, dayKey) {
-  // Find workout
-  let workout = null;
-  Object.values(state.currentPlan).forEach(day => {
-    day.workouts.forEach(w => {
-      if (w.id === workoutId) workout = w;
-    });
-  });
+  const workout = findWorkout(workoutId, dayKey);
   if (!workout) return;
-  
+
   const log = (state.workoutLogs[dayKey] || {})[workoutId] || { sets: {}, completed: false };
-  const info = SPORT_INFO[workout.type];
-  
+  const info = SPORT_INFO[workout.type] || SPORT_INFO['kraft'];
+
   let html = `
     <div class="modal-body">
       <div style="margin-bottom: 16px;">
@@ -1068,52 +1162,73 @@ function openWorkout(workoutId, dayKey) {
         ${workout.details ? `<div style="color: var(--text-secondary); font-size: 14px; margin-top: 4px;">${workout.details}</div>` : ''}
       </div>
   `;
-  
-  if (workout.type === 'kraft' && workout.exercises) {
-    workout.exercises.forEach((ex, exIdx) => {
+
+  if (workout.type === 'kraft') {
+    const exercises = getEffectiveExercises(workout, log);
+
+    exercises.forEach((ex, exIdx) => {
       const exLog = log.sets[ex.id] || {};
+      const numSets = ex.sets;
       let progressCount = 0;
-      for (let s = 1; s <= ex.sets; s++) {
+      for (let s = 1; s <= numSets; s++) {
         if (exLog[`set${s}`]?.checked) progressCount++;
       }
-      
+      const note = (log.notes || {})[ex.id] || '';
+
       html += `
         <div class="exercise-card">
           <div class="exercise-header">
-            <div>
+            <div style="flex:1; min-width:0;">
               <div class="exercise-name">${ex.name}</div>
-              <div class="exercise-meta">${ex.sets}×${ex.reps}${ex.equipment !== '-' ? ' · ' + ex.equipment : ''}</div>
+              <div class="exercise-meta">${numSets}×${ex.reps}${ex.equipment !== '-' ? ' · ' + ex.equipment : ''}</div>
             </div>
-            <div class="exercise-progress">${progressCount}/${ex.sets}</div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div class="exercise-progress">${progressCount}/${numSets}</div>
+              <button class="ex-menu-btn" onclick="openExerciseMenu('${dayKey}','${workoutId}','${ex.id}',${exIdx})" title="Optionen">···</button>
+            </div>
           </div>
+          ${note ? `<div class="exercise-note-display">${note}</div>` : ''}
           <div class="set-headers">
             <div>SET</div>
             <div>KG</div>
             <div>WDH</div>
             <div>✓</div>
+            <div></div>
           </div>
           <div class="set-grid">
       `;
-      
-      for (let s = 1; s <= ex.sets; s++) {
+
+      for (let s = 1; s <= numSets; s++) {
         const setData = exLog[`set${s}`] || {};
+        const canRemove = numSets > 1;
         html += `
           <div class="set-row">
             <div class="set-num">${s}</div>
-            <input type="number" class="set-input" placeholder="-" value="${setData.kg || ''}" 
+            <input type="number" class="set-input" placeholder="-" value="${setData.kg || ''}"
               oninput="updateSet('${dayKey}','${workoutId}','${ex.id}',${s},'kg',this.value)">
             <input type="text" class="set-input" placeholder="${ex.reps.split('-')[0]}" value="${setData.reps || ''}"
               oninput="updateSet('${dayKey}','${workoutId}','${ex.id}',${s},'reps',this.value)">
-            <div class="set-check ${setData.checked ? 'checked' : ''}" 
+            <div class="set-check ${setData.checked ? 'checked' : ''}"
               onclick="toggleSet('${dayKey}','${workoutId}','${ex.id}',${s})">
               ${setData.checked ? '✓' : ''}
             </div>
+            <button class="set-remove-btn ${canRemove ? '' : 'disabled'}"
+              onclick="${canRemove ? `removeSet('${dayKey}','${workoutId}','${ex.id}',${s})` : ''}"
+              title="Satz entfernen">×</button>
           </div>
         `;
       }
-      
-      html += `</div></div>`;
+
+      html += `
+          </div>
+          <button class="add-set-btn" onclick="addSet('${dayKey}','${workoutId}','${ex.id}')">+ Satz</button>
+        </div>
+      `;
     });
+
+    html += `
+      <button class="add-exercise-btn" onclick="openExercisePicker('${dayKey}','${workoutId}')">+ Übung hinzufügen</button>
+    `;
   } else {
     // Cardio tracking
     const cardioData = log.cardio || {};
@@ -1146,25 +1261,18 @@ function openWorkout(workoutId, dayKey) {
       </div>
     `;
   }
-  
-  // Complete button
+
   html += `
-      <button class="btn btn-primary" onclick="completeWorkout('${dayKey}','${workoutId}')" style="margin-top: 16px;">
-        ${log.completed ? '✓ Workout abgeschlossen' : 'Workout abschliessen'}
+      <button class="btn ${log.completed ? 'btn-secondary' : 'btn-primary'}" onclick="completeWorkout('${dayKey}','${workoutId}')" style="margin-top: 16px;">
+        ${log.completed ? '✓ Abgeschlossen — rückgängig?' : 'Workout abschliessen'}
       </button>
     </div>
   `;
-  
+
   showModal(html, workout.title);
 }
 
-function ensureLog(dayKey, workoutId) {
-  if (!state.workoutLogs[dayKey]) state.workoutLogs[dayKey] = {};
-  if (!state.workoutLogs[dayKey][workoutId]) {
-    state.workoutLogs[dayKey][workoutId] = { sets: {}, completed: false };
-  }
-  return state.workoutLogs[dayKey][workoutId];
-}
+// --- Set Editing ---
 
 function updateSet(dayKey, workoutId, exId, setNum, field, val) {
   const log = ensureLog(dayKey, workoutId);
@@ -1180,8 +1288,208 @@ function toggleSet(dayKey, workoutId, exId, setNum) {
   if (!log.sets[exId][`set${setNum}`]) log.sets[exId][`set${setNum}`] = {};
   log.sets[exId][`set${setNum}`].checked = !log.sets[exId][`set${setNum}`].checked;
   saveState();
-  openWorkout(workoutId, dayKey); // rerender
+  openWorkout(workoutId, dayKey);
 }
+
+function addSet(dayKey, workoutId, exId) {
+  const workout = findWorkout(workoutId, dayKey);
+  const log = ensureSnapshot(dayKey, workoutId, workout);
+  const ex = log.exercisesSnapshot.find(e => e.id === exId);
+  if (ex) { ex.sets++; saveState(); openWorkout(workoutId, dayKey); }
+}
+
+function removeSet(dayKey, workoutId, exId, setNum) {
+  const workout = findWorkout(workoutId, dayKey);
+  const log = ensureSnapshot(dayKey, workoutId, workout);
+  const ex = log.exercisesSnapshot.find(e => e.id === exId);
+  if (!ex || ex.sets <= 1) return;
+  // Shift set data down from the removed set
+  const setLog = log.sets[exId] || {};
+  for (let s = setNum; s < ex.sets; s++) {
+    setLog[`set${s}`] = setLog[`set${s + 1}`] || {};
+  }
+  delete setLog[`set${ex.sets}`];
+  log.sets[exId] = setLog;
+  ex.sets--;
+  saveState();
+  openWorkout(workoutId, dayKey);
+}
+
+// --- Exercise Menu ---
+
+function openExerciseMenu(dayKey, workoutId, exId, exIdx) {
+  const workout = findWorkout(workoutId, dayKey);
+  const log = (state.workoutLogs[dayKey] || {})[workoutId] || { sets: {}, completed: false };
+  const exercises = getEffectiveExercises(workout, log);
+  const ex = exercises[exIdx];
+  if (!ex) return;
+  const note = (log.notes || {})[ex.id] || '';
+
+  showModal(`
+    <div class="modal-body">
+      <div style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">${ex.name}</div>
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <button class="btn btn-secondary" onclick="closeModal(); openExercisePicker('${dayKey}','${workoutId}','${exId}')">
+          🔄 Übung austauschen
+        </button>
+        <button class="btn btn-secondary" onclick="closeModal(); openNoteEditor('${dayKey}','${workoutId}','${exId}')">
+          📝 ${note ? 'Notiz bearbeiten' : 'Notiz hinzufügen'}
+        </button>
+        <button class="btn btn-secondary" style="color: var(--danger); border-color: var(--danger);"
+          onclick="closeModal(); removeExercise('${dayKey}','${workoutId}','${exId}')">
+          🗑 Übung entfernen
+        </button>
+      </div>
+    </div>
+  `, ex.name);
+}
+
+function removeExercise(dayKey, workoutId, exId) {
+  if (!confirm('Übung aus dieser Session entfernen?')) return;
+  const workout = findWorkout(workoutId, dayKey);
+  const log = ensureSnapshot(dayKey, workoutId, workout);
+  log.exercisesSnapshot = log.exercisesSnapshot.filter(e => e.id !== exId);
+  saveState();
+  openWorkout(workoutId, dayKey);
+}
+
+function openNoteEditor(dayKey, workoutId, exId) {
+  const log = (state.workoutLogs[dayKey] || {})[workoutId] || {};
+  const existing = (log.notes || {})[exId] || '';
+  showModal(`
+    <div class="modal-body">
+      <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 12px;">Notiz für diese Session</p>
+      <textarea id="note-input" style="width:100%; background: var(--bg-deep); border: 1px solid var(--border);
+        border-radius: 10px; padding: 14px; font-family: 'Inter', sans-serif; font-size: 15px;
+        color: var(--text-primary); outline: none; resize: vertical; min-height: 100px;"
+        placeholder="Formhinweis, Gewichts-PR, Anmerkung…">${existing}</textarea>
+      <button class="btn btn-primary" onclick="saveNote('${dayKey}','${workoutId}','${exId}')" style="margin-top: 12px;">
+        Speichern
+      </button>
+    </div>
+  `, 'Notiz');
+  setTimeout(() => document.getElementById('note-input')?.focus(), 50);
+}
+
+function saveNote(dayKey, workoutId, exId) {
+  const val = document.getElementById('note-input')?.value.trim() || '';
+  const log = ensureLog(dayKey, workoutId);
+  if (!log.notes) log.notes = {};
+  if (val) log.notes[exId] = val;
+  else delete log.notes[exId];
+  saveState();
+  closeModal();
+  openWorkout(workoutId, dayKey);
+}
+
+// --- Exercise Picker ---
+
+function openExercisePicker(dayKey, workoutId, swapExId) {
+  const workout = findWorkout(workoutId, dayKey);
+  const location = state.user?.location || 'gym';
+  const split = inferSplitCategory(workout);
+  const primaryKey = getLibraryKey(split, location);
+  const allKeys = Object.keys(EXERCISE_LIBRARY).filter(k => k.endsWith(location === 'gym' ? '_gym' : '_home'));
+
+  let showAll = false;
+
+  function buildPickerHTML(showAllExercises) {
+    const keys = showAllExercises ? allKeys : [primaryKey];
+    const exercises = [];
+    keys.forEach(k => {
+      (EXERCISE_LIBRARY[k] || []).forEach(e => {
+        if (!exercises.find(x => x.name === e.name)) exercises.push({ ...e, _cat: k });
+      });
+    });
+
+    let rows = exercises.map(e => `
+      <div class="exercise-pick-row" onclick="pickExercise('${dayKey}','${workoutId}','${swapExId || ''}',${JSON.stringify(e).replace(/'/g, '&#39;').replace(/"/g, '&quot;')})">
+        <div>
+          <div style="font-size: 15px; font-weight: 600;">${e.name}</div>
+          <div style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${e.sets}×${e.reps}${e.equipment !== '-' ? ' · ' + e.equipment : ''}</div>
+        </div>
+        <div style="color: var(--accent); font-size: 20px;">+</div>
+      </div>
+    `).join('');
+
+    return `
+      <div class="modal-body">
+        ${!showAllExercises ? `
+          <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">
+            ${swapExId ? 'Tausche gegen:' : 'Zur Session hinzufügen:'} <strong>${split.toUpperCase()}</strong>-Übungen
+          </p>
+        ` : `
+          <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">Alle Übungen</p>
+        `}
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          ${rows}
+        </div>
+        ${!showAllExercises ? `
+          <button class="btn btn-ghost" onclick="reloadExercisePicker('${dayKey}','${workoutId}','${swapExId || ''}')" style="margin-top: 16px; font-size: 13px;">
+            Alle Übungen anzeigen →
+          </button>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  showModal(buildPickerHTML(false), swapExId ? 'Übung austauschen' : 'Übung hinzufügen');
+}
+
+function reloadExercisePicker(dayKey, workoutId, swapExId) {
+  // Re-open with all exercises
+  const workout = findWorkout(workoutId, dayKey);
+  const location = state.user?.location || 'gym';
+  const allKeys = Object.keys(EXERCISE_LIBRARY).filter(k => k.endsWith(location === 'gym' ? '_gym' : '_home'));
+  const exercises = [];
+  allKeys.forEach(k => {
+    (EXERCISE_LIBRARY[k] || []).forEach(e => {
+      if (!exercises.find(x => x.name === e.name)) exercises.push({ ...e, _cat: k });
+    });
+  });
+
+  const rows = exercises.map(e => `
+    <div class="exercise-pick-row" onclick="pickExercise('${dayKey}','${workoutId}','${swapExId}',${JSON.stringify(e).replace(/'/g, '&#39;').replace(/"/g, '&quot;')})">
+      <div>
+        <div style="font-size: 15px; font-weight: 600;">${e.name}</div>
+        <div style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${e.sets}×${e.reps}${e.equipment !== '-' ? ' · ' + e.equipment : ''}</div>
+      </div>
+      <div style="color: var(--accent); font-size: 20px;">+</div>
+    </div>
+  `).join('');
+
+  showModal(`
+    <div class="modal-body">
+      <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">Alle Übungen</p>
+      <div style="display: flex; flex-direction: column; gap: 8px;">${rows}</div>
+    </div>
+  `, swapExId ? 'Übung austauschen' : 'Übung hinzufügen');
+}
+
+function pickExercise(dayKey, workoutId, swapExId, exerciseData) {
+  // exerciseData may arrive as string (from onclick attribute) or object
+  const ex = typeof exerciseData === 'string' ? JSON.parse(exerciseData) : exerciseData;
+  const workout = findWorkout(workoutId, dayKey);
+  const log = ensureSnapshot(dayKey, workoutId, workout);
+  const newEx = { id: `ex-custom-${Date.now()}`, name: ex.name, sets: ex.sets || 3, reps: ex.reps || '10', equipment: ex.equipment || '-' };
+
+  if (swapExId) {
+    const idx = log.exercisesSnapshot.findIndex(e => e.id === swapExId);
+    if (idx >= 0) {
+      // Clear old log data for the swapped exercise
+      if (log.sets) delete log.sets[swapExId];
+      log.exercisesSnapshot[idx] = newEx;
+    }
+  } else {
+    log.exercisesSnapshot.push(newEx);
+  }
+
+  saveState();
+  closeModal();
+  openWorkout(workoutId, dayKey);
+}
+
+// --- Cardio + Complete ---
 
 function updateCardio(dayKey, workoutId, field, val) {
   const log = ensureLog(dayKey, workoutId);
@@ -1246,10 +1554,10 @@ function renderStats() {
     Object.entries(dayLogs).forEach(([wid, log]) => {
       if (log.completed) {
         totalCompleted++;
-        // Extract type from workout id (e.g., 'kraft-0', 'lauf-long-2')
-        const type = wid.split('-')[0];
-        if (byType[type] !== undefined) byType[type]++;
-        
+        // Custom workouts store their type in customMeta; plan workouts encode type in id
+        const type = log.isCustom ? log.customMeta?.type : wid.split('-')[0];
+        if (type && byType[type] !== undefined) byType[type]++;
+
         // Sum kg from sets
         Object.values(log.sets || {}).forEach(setObj => {
           Object.values(setObj).forEach(set => {
@@ -1258,7 +1566,7 @@ function renderStats() {
             }
           });
         });
-        
+
         // Cardio
         if (log.cardio) {
           if (log.cardio.distance) totalKmCovered += parseFloat(log.cardio.distance);
@@ -1394,7 +1702,10 @@ function renderProfile() {
       `).join('')}
     </div>
     
-    <button class="btn btn-secondary" onclick="regeneratePlan()" style="margin-top: 16px;">
+    <button class="btn btn-secondary" onclick="openRetroLogger()" style="margin-top: 16px;">
+      📅 Workout nachtragen
+    </button>
+    <button class="btn btn-secondary" onclick="regeneratePlan()" style="margin-top: 8px;">
       🔄 Plan neu generieren
     </button>
     <button class="btn btn-ghost" onclick="resetApp()" style="margin-top: 8px; color: var(--danger);">
@@ -1419,13 +1730,121 @@ function regeneratePlan() {
   }
 }
 
-async function resetApp() {
+function resetApp() {
   if (confirm('Wirklich alles zurücksetzen? Alle Daten gehen verloren.')) {
-    try {
-      await window.storage.delete('app-state');
-    } catch (e) {}
+    try { if (storageAvailable) localStorage.removeItem(STORAGE_KEY); } catch (e) {}
     location.reload();
   }
+}
+
+// --- Retro Logger ---
+
+function openRetroLogger() {
+  const today = new Date();
+  const minDate = new Date(today);
+  minDate.setDate(today.getDate() - 30);
+
+  const todayStr = today.toISOString().split('T')[0];
+  const minStr = minDate.toISOString().split('T')[0];
+
+  showModal(`
+    <div class="modal-body">
+      <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 20px;">
+        Wähle ein vergangenes Datum um ein Workout nachzutragen.
+      </p>
+      <div style="margin-bottom: 20px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 8px;">Datum</div>
+        <input type="date" id="retro-date" max="${todayStr}" min="${minStr}" value="${todayStr}"
+          style="width: 100%; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 10px;
+          padding: 14px 16px; font-family: 'JetBrains Mono', monospace; font-size: 16px;
+          color: var(--text-primary); outline: none;"
+          onchange="loadRetroWorkouts(this.value)">
+      </div>
+      <div id="retro-workout-list"></div>
+    </div>
+  `, 'Workout nachtragen');
+
+  setTimeout(() => loadRetroWorkouts(todayStr), 50);
+}
+
+function loadRetroWorkouts(dateStr) {
+  const date = new Date(dateStr + 'T12:00:00');
+  const dayIdx = getDayIndex(date);
+  const planDay = state.currentPlan[dayIdx];
+  const existingLogs = state.workoutLogs[dateStr] || {};
+
+  const container = document.getElementById('retro-workout-list');
+  if (!container) return;
+
+  let html = `<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 12px;">
+    ${date.toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' })}
+  </div>`;
+
+  const plannedWorkouts = planDay ? planDay.workouts : [];
+
+  if (plannedWorkouts.length > 0) {
+    html += `<div style="margin-bottom: 8px; font-size: 13px; color: var(--text-secondary);">Geplante Workouts:</div>`;
+    plannedWorkouts.forEach(w => {
+      const done = existingLogs[w.id]?.completed;
+      const info = SPORT_INFO[w.type];
+      html += `
+        <div class="exercise-pick-row" onclick="closeModal(); openWorkout('${w.id}', '${dateStr}')">
+          <div>
+            <div style="font-size: 15px; font-weight: 600;">${w.title}</div>
+            <div style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
+              ${info.label.toUpperCase()} · ${w.duration} MIN ${done ? '· ✓ Bereits eingetragen' : ''}
+            </div>
+          </div>
+          <div style="color: var(--accent); font-size: 20px;">${done ? '✓' : '→'}</div>
+        </div>
+      `;
+    });
+  } else {
+    html += `<div style="color: var(--text-secondary); font-size: 14px; margin-bottom: 12px;">Pause-Tag — kein Plan für diesen Tag.</div>`;
+  }
+
+  html += `
+    <div style="border-top: 1px solid var(--border); margin: 16px 0;"></div>
+    <div style="margin-bottom: 8px; font-size: 13px; color: var(--text-secondary);">Oder eigenes Workout erstellen:</div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+      ${[['kraft','💪','Kraft'],['lauf','🏃','Laufen'],['rad','🚴','Rad'],['schwimm','🏊','Schwimmen']].map(([type, icon, label]) => `
+        <button class="btn btn-secondary" style="font-size: 14px;" onclick="createCustomWorkout('${dateStr}','${type}')">
+          ${icon} ${label}
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+function createCustomWorkout(dateStr, type) {
+  const id = `__custom_${type}_${dateStr}_${Date.now()}`;
+  const info = SPORT_INFO[type];
+  const isKraft = type === 'kraft';
+  const location = state.user?.location || 'gym';
+  const libKey = getLibraryKey('full', location);
+  const defaultExercises = isKraft ? (EXERCISE_LIBRARY[libKey] || []).map((e, i) => ({ ...e, id: `ex-custom-${i}` })) : [];
+
+  const customMeta = {
+    id,
+    type,
+    title: `Custom — ${info.label}`,
+    duration: CONFIG.WORKOUT_DURATIONS[type === 'kraft' ? 'KRAFT_BASE' : type === 'lauf' ? 'LAUF_Z2' : type === 'rad' ? 'RAD_Z2' : 'SCHWIMMEN'],
+    exercises: defaultExercises,
+    details: ''
+  };
+
+  if (!state.workoutLogs[dateStr]) state.workoutLogs[dateStr] = {};
+  state.workoutLogs[dateStr][id] = {
+    isCustom: true,
+    customMeta,
+    sets: {},
+    completed: false
+  };
+  saveState();
+  closeModal();
+  openWorkout(id, dateStr);
 }
 
 // --- Nav / Tabs ---
@@ -1493,8 +1912,8 @@ function showSettings() {
 
 // === INIT ===
 
-(async function init() {
-  const loaded = await loadState();
+(function init() {
+  const loaded = loadState();
   if (loaded && state.user && state.currentPlan) {
     document.getElementById('header-section').classList.remove('hidden');
     document.getElementById('bottom-nav').classList.remove('hidden');
@@ -1502,6 +1921,9 @@ function showSettings() {
   } else {
     state.onboardingStep = 0;
     renderOnboarding();
+  }
+  if (!storageAvailable) {
+    setTimeout(() => showToast('⚠ Speicher nicht verfügbar (privater Modus?) — Daten gehen beim Schliessen verloren'), 200);
   }
 })();
 

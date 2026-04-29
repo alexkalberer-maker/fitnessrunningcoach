@@ -933,13 +933,6 @@ input[type="range"]::-moz-range-thumb {
   gap: 8px;
 }
 
-.set-row {
-  display: grid;
-  grid-template-columns: 36px 1fr 1fr 36px;
-  gap: 8px;
-  align-items: center;
-}
-
 .set-num {
   font-family: 'JetBrains Mono', monospace;
   font-size: 13px;
@@ -987,19 +980,6 @@ input[type="range"]::-moz-range-thumb {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg-deep);
-}
-
-.set-headers {
-  display: grid;
-  grid-template-columns: 36px 1fr 1fr 36px;
-  gap: 8px;
-  padding: 0 18px 8px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  text-align: center;
 }
 
 /* === CARDIO TRACKING === */
@@ -1242,3 +1222,157 @@ input[type="range"]::-moz-range-thumb {
 
 .summary-stat-label { color: var(--text-secondary); }
 .summary-stat-value { color: var(--text-primary); font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+
+/* === WORKOUT EDITING === */
+
+/* set-row now has 5 columns (added remove button) */
+.set-row {
+  display: grid;
+  grid-template-columns: 36px 1fr 1fr 36px 36px;
+  gap: 8px;
+  align-items: center;
+}
+
+.set-headers {
+  display: grid;
+  grid-template-columns: 36px 1fr 1fr 36px 36px;
+  gap: 8px;
+  padding: 0 18px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-align: center;
+}
+
+.set-remove-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--danger);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  line-height: 1;
+  padding: 0;
+}
+
+.set-remove-btn:hover:not(.disabled) {
+  background: rgba(255, 71, 87, 0.1);
+  border-color: var(--danger);
+}
+
+.set-remove-btn.disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.add-set-btn {
+  width: calc(100% - 36px);
+  margin: 8px 18px 16px;
+  padding: 10px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+  min-height: 44px;
+}
+
+.add-set-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.add-exercise-btn {
+  width: 100%;
+  padding: 14px;
+  background: transparent;
+  border: 1px dashed var(--border-bright);
+  border-radius: 14px;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  min-height: 52px;
+}
+
+.add-exercise-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.ex-menu-btn {
+  min-width: 44px;
+  min-height: 44px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.05em;
+  transition: all 0.15s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.ex-menu-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  border-color: var(--border-bright);
+}
+
+.exercise-note-display {
+  margin: 0 18px 8px;
+  padding: 8px 12px;
+  background: var(--bg-deep);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Exercise picker rows (used in swap + retro logger) */
+.exercise-pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  min-height: 56px;
+}
+
+.exercise-pick-row:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* Date input theming */
+input[type="date"] {
+  color-scheme: dark;
+}
