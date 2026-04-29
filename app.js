@@ -4,21 +4,93 @@
 const CONFIG = {
   // Workout-Dauer in Minuten
   WORKOUT_DURATIONS: {
-    KRAFT_BASE: 45,           // Basis-Dauer Krafttraining
-    KRAFT_ADVANCED_BONUS: 15, // Extra Min für Advanced User
-    LAUF_LONG: 90,            // Long Run
-    LAUF_INTERVAL: 60,        // Intervall-Training
-    LAUF_Z2: 45,              // Z2 Grundlagen-Lauf
-    LAUF_TEMPO: 50,           // Tempo-Lauf
-    RAD_Z2: 60,               // Lockerer Rad
-    RAD_LONG: 90,             // Long Ride
-    SCHWIMMEN: 45             // Schwimm-Einheit
+    KRAFT_BASE: 45,
+    KRAFT_ADVANCED_BONUS: 15,
+    // Lauf
+    EASY_RUN: 45,
+    LONG_RUN_BASE: 75,
+    TEMPO_RUN: 55,
+    INTERVAL_SHORT: 50,
+    INTERVAL_LONG: 60,
+    FARTLEK: 40,
+    PROGRESSION_RUN: 55,
+    HILL_REPEATS: 50,
+    RACE_PACE_RUN: 50,
+    // Rad
+    RAD_Z2: 70,
+    RAD_SWEET_SPOT: 75,
+    RAD_THRESHOLD: 65,
+    RAD_VO2MAX: 60,
+    RAD_RECOVERY: 40,
+    RAD_LONG: 110,
+    // Sonstiges
+    SCHWIMMEN: 45,
+    BRICK: 95,
+    // Legacy (für Kompatibilität mit alten Logs)
+    LAUF_LONG: 90,
+    LAUF_INTERVAL: 60,
+    LAUF_Z2: 45,
+    LAUF_TEMPO: 50
+  },
+
+  // Phasen-Schwellenwerte (Wochen bis Race)
+  PHASE_THRESHOLDS: {
+    BUILD: 12,   // <= 12 Wochen → Build
+    PEAK: 6,     // <= 6 Wochen → Peak
+    TAPER: 2     // <= 2 Wochen → Taper
+  },
+
+  // Phasen-Labels für UI
+  PHASE_UI: {
+    base:      { label: 'BASE',      desc: 'Grundlagen aufbauen',     color: '#4a9eff' },
+    build:     { label: 'BUILD',     desc: 'Tempo & Intervalle',      color: '#f5a623' },
+    peak:      { label: 'PEAK',      desc: 'Race-spezifisch',         color: '#e84545' },
+    taper:     { label: 'TAPER',     desc: 'Schärfen & Erholen',      color: '#9b59b6' },
+    post_race: { label: 'POST RACE', desc: 'Erholung & neues Ziel',   color: '#27ae60' }
+  },
+
+  // Pace-Offsets in Sek/km relativ zur Ziel-Race-Pace
+  PACE_OFFSETS: {
+    EASY:          75,
+    MARATHON:      37,
+    HALF_MARATHON: 20,
+    TEMPO:         10,
+    TEN_K:         -5,
+    FIVE_K:        -12,
+    INTERVAL_1K:   -20,
+    INTERVAL_400:  -35
+  },
+
+  // Standard-Paces (Sek/km) wenn kein PB vorhanden
+  DEFAULT_EASY_PACE_SEC: {
+    beginner:     390,  // 6:30/km
+    intermediate: 330,  // 5:30/km
+    advanced:     300   // 5:00/km
+  },
+
+  // Standard Long-Run Dauern (Sek/km) für Phase-Progression
+  LONG_RUN_DURATIONS_BY_PHASE: {
+    base:  [75,  80,  85,  90 ],
+    build: [90,  100, 110, 120],
+    peak:  [120, 130, 140, 150],
+    taper: [70,  60,  50,  50 ]
+  },
+
+  // Legacy für Backward-Kompatibilität
+  LONG_RUN_DURATIONS: [75, 90, 90, 100],
+
+  // Triathlon-Empfehlungs-Volumen pro Typ
+  TRIATHLON_VOLUMES: {
+    sprint_tri:  { schwimm: 2, rad: 2, lauf: 3, kraft: 2 },
+    olympic_tri: { schwimm: 2, rad: 3, lauf: 3, kraft: 2 },
+    half_tri:    { schwimm: 2, rad: 3, lauf: 3, kraft: 1 },
+    full_tri:    { schwimm: 3, rad: 4, lauf: 4, kraft: 1 }
   },
 
   // Trainings-Empfehlungen
   RECOMMENDED_LIMITS: {
-    MAX_WEEKLY_UNITS: 7,                     // Warnung bei mehr als X
-    MIN_REST_HOURS_LEGS_TO_INTERVAL: 24      // Pause Legs → Intervall (Doku — Plan-Generator hält Regel implizit ein)
+    MAX_WEEKLY_UNITS: 7,
+    MIN_REST_HOURS_LEGS_TO_INTERVAL: 24
   },
 
   // Standardwerte beim Onboarding
@@ -30,10 +102,10 @@ const CONFIG = {
   },
 
   // Plan-Generator Verhalten
-  STREAK_LOOKBACK_DAYS: 30,   // Wie weit zurück Streak prüfen
-  PLAN_GEN_DELAY_MS: 1800,    // Loading-Animation beim Plan generieren
-  PLAN_WEEKS: 4,              // Anzahl Wochen im Mehrwochenplan
-  LONG_RUN_DURATIONS: [75, 90, 90, 100] // Long-Run-Dauer je Woche (Progression)
+  STREAK_LOOKBACK_DAYS: 30,
+  PLAN_GEN_DELAY_MS: 1800,
+  PLAN_WEEKS: 4,
+  MAX_PLAN_WEEKS: 24  // Max. Wochen die JIT generiert werden
 };
 
 // === STATE & PERSISTENCE ===
@@ -130,6 +202,145 @@ function loadState() {
     console.warn('State korrupt — starte mit Onboarding:', err);
     try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
     return false;
+  }
+}
+
+// === TRAINING INTELLIGENCE UTILITIES ===
+
+// Returns weekOffset-adjusted weeks-until-race (0 = race this week, negative = past)
+function getWeeksUntilRace(data, weekOffset) {
+  const race = data.race;
+  if (!race || !race.date) return null;
+  const raceDate = new Date(race.date + 'T00:00:00');
+  const today = new Date();
+  const planWeekStart = new Date(getMondayOfWeek(today));
+  planWeekStart.setDate(planWeekStart.getDate() + (weekOffset || 0) * 7);
+  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+  return Math.ceil((raceDate - planWeekStart) / msPerWeek);
+}
+
+// Returns training phase string for given week
+function getTrainingPhase(data, weekOffset) {
+  const weeks = getWeeksUntilRace(data, weekOffset || 0);
+  if (weeks === null) {
+    // No race: phase by goal
+    const goal = data.goal || 'fitness';
+    if (goal === 'race') return 'build';
+    if (goal === 'strength') return 'build';
+    return 'base';
+  }
+  if (weeks < 0) return 'post_race';
+  if (weeks <= CONFIG.PHASE_THRESHOLDS.TAPER) return 'taper';
+  if (weeks <= CONFIG.PHASE_THRESHOLDS.PEAK)  return 'peak';
+  if (weeks <= CONFIG.PHASE_THRESHOLDS.BUILD) return 'build';
+  return 'base';
+}
+
+// Converts h/m/s object to total seconds
+function hmsToSeconds(hms) {
+  if (!hms) return null;
+  return (hms.hours || 0) * 3600 + (hms.minutes || 0) * 60 + (hms.seconds || 0);
+}
+
+// Formats seconds-per-km as "M:SS/km"
+function formatPace(secPerKm) {
+  if (!secPerKm || secPerKm <= 0) return null;
+  const m = Math.floor(secPerKm / 60);
+  const s = Math.round(secPerKm % 60);
+  return `${m}:${String(s).padStart(2, '0')}/km`;
+}
+
+// Distance in km for a race type (single-sport)
+function getRaceDistanceKm(raceType) {
+  const map = { '5k': 5, '10k': 10, 'half_marathon': 21.1, 'marathon': 42.2 };
+  return map[raceType] || null;
+}
+
+// Derives a full set of training paces from user data
+function calculatePaces(data) {
+  const exp = data.experience || 'intermediate';
+  const race = data.race;
+
+  // Baseline easy pace (sec/km)
+  let easyPaceSec = CONFIG.DEFAULT_EASY_PACE_SEC[exp] || 330;
+  let racePaceSec = null;
+
+  // Try to derive from goalTime → race distance
+  if (race && race.goalTime && race.type) {
+    const distKm = getRaceDistanceKm(race.type);
+    const totalSec = hmsToSeconds(race.goalTime);
+    if (distKm && totalSec) {
+      racePaceSec = totalSec / distKm;
+      easyPaceSec = racePaceSec + CONFIG.PACE_OFFSETS.EASY;
+    }
+  } else if (race && race.currentPB && race.type) {
+    const distKm = getRaceDistanceKm(race.type);
+    const totalSec = hmsToSeconds(race.currentPB);
+    if (distKm && totalSec) {
+      racePaceSec = totalSec / distKm;
+      easyPaceSec = racePaceSec + CONFIG.PACE_OFFSETS.EASY;
+    }
+  }
+
+  // Build full pace table
+  const base = racePaceSec || (easyPaceSec - CONFIG.PACE_OFFSETS.EASY);
+  return {
+    easy:         Math.round(easyPaceSec),
+    marathon:     Math.round(base + CONFIG.PACE_OFFSETS.MARATHON),
+    halfMarathon: Math.round(base + CONFIG.PACE_OFFSETS.HALF_MARATHON),
+    tempo:        Math.round(base + CONFIG.PACE_OFFSETS.TEMPO),
+    tenK:         Math.round(base + CONFIG.PACE_OFFSETS.TEN_K),
+    fiveK:        Math.round(base + CONFIG.PACE_OFFSETS.FIVE_K),
+    interval1k:   Math.round(base + CONFIG.PACE_OFFSETS.INTERVAL_1K),
+    interval400:  Math.round(base + CONFIG.PACE_OFFSETS.INTERVAL_400)
+  };
+}
+
+// Returns the Long Run duration in minutes for current phase + week index within phase
+function getLongRunDuration(phase, weekIdx) {
+  const table = CONFIG.LONG_RUN_DURATIONS_BY_PHASE[phase] || CONFIG.LONG_RUN_DURATIONS_BY_PHASE.base;
+  return table[weekIdx % table.length];
+}
+
+// Select lauf workout types for the week based on phase + total runs
+function selectLaufTypes(phase, nLauf, isRaceGoal, raceType) {
+  const isTri = raceType && raceType.includes('tri');
+  switch (phase) {
+    case 'taper':
+      return (['long_run', 'race_pace', 'easy_run', 'easy_run']).slice(0, nLauf);
+    case 'peak':
+      if (nLauf === 1) return ['long_run'];
+      if (nLauf === 2) return ['long_run', 'race_pace'];
+      if (nLauf === 3) return ['long_run', 'race_pace', 'interval_short'];
+      return (['long_run', 'race_pace', 'interval_short', 'easy_run']).slice(0, nLauf);
+    case 'build':
+      if (nLauf === 1) return ['long_run'];
+      if (nLauf === 2) return ['long_run', 'tempo_run'];
+      if (nLauf === 3) return ['long_run', 'tempo_run', 'interval_long'];
+      return (['long_run', 'tempo_run', 'interval_long', 'easy_run']).slice(0, nLauf);
+    default: // base
+      if (nLauf === 1) return ['long_run'];
+      if (nLauf === 2) return ['long_run', 'easy_run'];
+      if (nLauf === 3) return isTri ? ['long_run', 'easy_run', 'easy_run'] : ['long_run', 'easy_run', 'fartlek'];
+      return (['long_run', 'easy_run', 'easy_run', 'fartlek']).slice(0, nLauf);
+  }
+}
+
+// Select rad workout types for the week based on phase
+function selectRadTypes(phase, nRad) {
+  switch (phase) {
+    case 'taper':
+      return (['recovery_ride', 'z2_endurance', 'z2_endurance']).slice(0, nRad);
+    case 'peak':
+      if (nRad === 1) return ['z2_endurance'];
+      if (nRad === 2) return ['z2_endurance', 'threshold'];
+      return (['z2_endurance', 'threshold', 'vo2max']).slice(0, nRad);
+    case 'build':
+      if (nRad === 1) return ['z2_endurance'];
+      if (nRad === 2) return ['z2_endurance', 'sweet_spot'];
+      return (['z2_endurance', 'sweet_spot', 'threshold']).slice(0, nRad);
+    default: // base
+      return (['z2_endurance', 'z2_endurance', 'long_ride']).slice(0, nRad);
   }
 }
 
