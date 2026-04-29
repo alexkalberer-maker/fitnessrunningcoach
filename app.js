@@ -347,12 +347,13 @@ function selectRadTypes(phase, nRad) {
 // === PLAN GENERATOR ===
 
 const SPORT_INFO = {
-  kraft: { icon: '💪', label: 'Kraft', color: 'kraft' },
-  lauf: { icon: '🏃', label: 'Laufen', color: 'lauf' },
-  rad: { icon: '🚴', label: 'Rad', color: 'rad' },
-  schwimm: { icon: '🏊', label: 'Schwimmen', color: 'schwimm' },
-  mobility: { icon: '🧘', label: 'Mobility', color: 'mobility' },
-  rest: { icon: '😴', label: 'Pause', color: 'rest' }
+  kraft:  { icon: '💪', label: 'Kraft',     color: 'kraft' },
+  lauf:   { icon: '🏃', label: 'Laufen',    color: 'lauf' },
+  rad:    { icon: '🚴', label: 'Rad',       color: 'rad' },
+  schwimm:{ icon: '🏊', label: 'Schwimmen', color: 'schwimm' },
+  brick:  { icon: '🧱', label: 'Brick',     color: 'rad' },
+  mobility:{ icon: '🧘', label: 'Mobility', color: 'mobility' },
+  rest:   { icon: '😴', label: 'Pause',     color: 'rest' }
 };
 
 const EXERCISE_LIBRARY = {
@@ -591,36 +592,73 @@ function generate4WeekPlan(data) {
 }
 
 function createLaufWorkout(type, dayIdx, data) {
-  const workouts = {
-    long: {
-      title: 'Long Run',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_LONG,
-      details: 'Lockeres Tempo, HF-Zone 2',
-      time: 'Morgen'
-    },
-    intervall: {
-      title: 'Intervall — Speed',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_INTERVAL,
-      details: '6×1km @ Renntempo / 90s Pause',
-      time: 'Morgen'
-    },
-    z2: {
-      title: 'Z2 — Grundlage',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_Z2,
-      details: 'Locker, Konversationstempo',
-      time: 'Morgen'
-    },
-    tempo: {
-      title: 'Tempo — Schwellentempo',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_TEMPO,
-      details: '20-30 Min Tempolauf',
-      time: 'Morgen'
-    }
+  const paces = data ? calculatePaces(data) : null;
+  const p = (key) => paces ? (formatPace(paces[key]) || '') : '';
+
+  const defs = {
+    // Legacy keys (backward compat)
+    long:      { title: 'Long Run', duration: CONFIG.WORKOUT_DURATIONS.EASY_RUN * 2, details: 'Lockeres Tempo, HF-Zone 2', time: 'Morgen' },
+    intervall: { title: 'Intervall — Speed', duration: CONFIG.WORKOUT_DURATIONS.INTERVAL_LONG, details: `6×1km${p('interval1k') ? ' @ '+p('interval1k') : ''} / 90s Pause`, time: 'Morgen' },
+    z2:        { title: 'Z2 — Grundlage', duration: CONFIG.WORKOUT_DURATIONS.EASY_RUN, details: `Locker${p('easy') ? ', Ziel: '+p('easy') : ', Konversationstempo'}`, time: 'Morgen' },
+    tempo:     { title: 'Tempo — Schwellentempo', duration: CONFIG.WORKOUT_DURATIONS.TEMPO_RUN, details: `20-30 Min Tempolauf${p('tempo') ? ' @ '+p('tempo') : ''}`, time: 'Morgen' },
+    // New types
+    easy_run:  { title: 'Easy Run', duration: CONFIG.WORKOUT_DURATIONS.EASY_RUN, details: `Locker, konversationsfähig${p('easy') ? ' · Ziel: '+p('easy') : ''}`, time: 'Morgen' },
+    long_run:  { title: 'Long Run', duration: CONFIG.WORKOUT_DURATIONS.LAUF_LONG, details: `HF-Zone 2, locker${p('easy') ? ' · '+p('easy') : ''}`, time: 'Morgen' },
+    tempo_run: { title: 'Tempo Run', duration: CONFIG.WORKOUT_DURATIONS.TEMPO_RUN, details: `30 Min Schwellentempo${p('tempo') ? ' @ '+p('tempo') : ''} · incl. Warm-up/Cool-down`, time: 'Morgen' },
+    interval_short: { title: 'Intervall — Kurz', duration: CONFIG.WORKOUT_DURATIONS.INTERVAL_SHORT, details: `8×400m${p('interval400') ? ' @ '+p('interval400') : ''} / 90s Pause`, time: 'Morgen' },
+    interval_long:  { title: 'Intervall — Lang', duration: CONFIG.WORKOUT_DURATIONS.INTERVAL_LONG, details: `5×1000m${p('interval1k') ? ' @ '+p('interval1k') : ''} / 2 Min Pause`, time: 'Morgen' },
+    fartlek:    { title: 'Fartlek', duration: CONFIG.WORKOUT_DURATIONS.FARTLEK, details: '5 min easy, 1 min hart, wiederholen · spielerisch', time: 'Morgen' },
+    progression_run: { title: 'Progression Run', duration: CONFIG.WORKOUT_DURATIONS.PROGRESSION_RUN, details: `1/3 Easy${p('easy') ? ' ('+p('easy')+')' : ''}, 1/3 Marathon-Pace${p('marathon') ? ' ('+p('marathon')+')' : ''}, 1/3 Halb-Pace${p('halfMarathon') ? ' ('+p('halfMarathon')+')' : ''}`, time: 'Morgen' },
+    hill_repeats: { title: 'Hill Repeats', duration: CONFIG.WORKOUT_DURATIONS.HILL_REPEATS, details: '8×90s Berg-Sprints, 2 Min Pause · Kraft + Pace', time: 'Morgen' },
+    race_pace:  { title: 'Race Pace Run', duration: CONFIG.WORKOUT_DURATIONS.RACE_PACE_RUN, details: `30 Min @ Race-Pace${p('halfMarathon') ? ' ('+p('halfMarathon')+')' : ''} · mentale Race-Vorbereitung`, time: 'Morgen' }
   };
+  const def = defs[type] || defs.easy_run;
   return {
     id: `lauf-${type}-${dayIdx}`,
     type: 'lauf',
-    ...workouts[type],
+    workoutSubtype: type,
+    isHard: ['intervall', 'tempo', 'tempo_run', 'interval_short', 'interval_long', 'hill_repeats', 'race_pace'].includes(type),
+    ...def,
+    exercises: []
+  };
+}
+
+function createRadWorkout(type, dayIdx, data) {
+  const defs = {
+    z2_endurance: { title: 'Rad — Z2 Grundlage', duration: CONFIG.WORKOUT_DURATIONS.RAD_Z2, details: 'HF-Zone 2, locker · Aerobe Basis', time: 'Morgen' },
+    sweet_spot:   { title: 'Rad — Sweet Spot', duration: CONFIG.WORKOUT_DURATIONS.RAD_SWEET_SPOT, details: '3×15 Min @ 88-93% FTP / 5 Min Pause', time: 'Morgen' },
+    threshold:    { title: 'Rad — Threshold', duration: CONFIG.WORKOUT_DURATIONS.RAD_THRESHOLD, details: '3×10 Min @ 95-105% FTP / 5 Min Pause', time: 'Morgen' },
+    vo2max:       { title: 'Rad — VO2max', duration: CONFIG.WORKOUT_DURATIONS.RAD_VO2MAX, details: '6×4 Min @ ~115% FTP / 4 Min Pause · maximale Sauerstoffaufnahme', time: 'Morgen' },
+    recovery_ride:{ title: 'Rad — Recovery', duration: CONFIG.WORKOUT_DURATIONS.RAD_RECOVERY, details: 'Zone 1, sehr locker · Beine ausschütteln', time: 'Morgen' },
+    long_ride:    { title: 'Rad — Long Ride', duration: CONFIG.WORKOUT_DURATIONS.RAD_LONG, details: 'Z2 Ausdauer · letztes 30 Min etwas Tempo', time: 'Morgen' },
+    // Legacy
+    z2:    { title: 'Rad — Z2 Grundlage', duration: CONFIG.WORKOUT_DURATIONS.RAD_Z2, details: 'HF-Zone 2, locker', time: 'Morgen' },
+    tempo: { title: 'Rad — Tempo', duration: CONFIG.WORKOUT_DURATIONS.RAD_Z2, details: 'Sweet Spot 88-93% FTP', time: 'Morgen' },
+    long:  { title: 'Rad — Long', duration: CONFIG.WORKOUT_DURATIONS.RAD_LONG, details: 'Lockerer Long Ride', time: 'Morgen' }
+  };
+  const def = defs[type] || defs.z2_endurance;
+  return {
+    id: `rad-${type}-${dayIdx}`,
+    type: 'rad',
+    workoutSubtype: type,
+    isHard: ['sweet_spot', 'threshold', 'vo2max'].includes(type),
+    ...def,
+    exercises: []
+  };
+}
+
+function createBrickWorkout(dayIdx, data, phase) {
+  const bikeDur = phase === 'peak' ? 75 : phase === 'build' ? 60 : 45;
+  const runDur  = phase === 'peak' ? 25 : phase === 'build' ? 20 : 15;
+  return {
+    id: `brick-${dayIdx}`,
+    type: 'brick',
+    workoutSubtype: 'brick',
+    isHard: false,
+    title: 'Brick — Rad + Lauf',
+    duration: bikeDur + runDur,
+    details: `${bikeDur} Min Rad + ${runDur} Min Lauf direkt danach · Wettkampf-Simulation`,
+    time: 'Morgen',
     exercises: []
   };
 }
