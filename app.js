@@ -31,7 +31,9 @@ const CONFIG = {
 
   // Plan-Generator Verhalten
   STREAK_LOOKBACK_DAYS: 30,   // Wie weit zurück Streak prüfen
-  PLAN_GEN_DELAY_MS: 1800     // Loading-Animation beim Plan generieren
+  PLAN_GEN_DELAY_MS: 1800,    // Loading-Animation beim Plan generieren
+  PLAN_WEEKS: 4,              // Anzahl Wochen im Mehrwochenplan
+  LONG_RUN_DURATIONS: [75, 90, 90, 100] // Long-Run-Dauer je Woche (Progression)
 };
 
 // === STATE & PERSISTENCE ===
@@ -53,6 +55,7 @@ let state = {
   user: null,
   currentTab: 'home',
   selectedDayIndex: null,
+  viewingWeekIndex: 0,        // which week index is shown in dashboard
   onboardingStep: 0,
   onboardingData: {
     sports: [],
@@ -64,13 +67,14 @@ let state = {
       rad: CONFIG.DEFAULT_VOLUMES.RAD,
       schwimm: CONFIG.DEFAULT_VOLUMES.SCHWIMM
     },
+    trainingDays: [0, 1, 2, 3, 4], // Mon–Fri default; Mon=0, Sun=6
     experience: 'intermediate',
     goal: 'recomp',
     daysPerWeek: 5
   },
   todayCheckin: null,
   workoutLogs: {}, // { 'YYYY-MM-DD': { workoutId: { ...completion data } } }
-  currentPlan: null
+  currentPlan: null // [{weekNumber, startDate, days: {0-6}}, ...]
 };
 
 function saveState() {
@@ -91,7 +95,36 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return false;
     const saved = JSON.parse(raw);
+
+    // Migrate old flat plan {0:{day,workouts[]}, …, 6:{…}} → 4-week array
+    if (saved.currentPlan && !Array.isArray(saved.currentPlan)) {
+      const oldPlan = saved.currentPlan;
+      // generatePlan/getMondayOfWeek not yet available here — call after assign
+      saved._needsPlanMigration = true;
+    }
+
     Object.assign(state, saved);
+
+    if (state._needsPlanMigration) {
+      delete state._needsPlanMigration;
+      const oldDays = state.currentPlan; // still the flat object
+      const monday = getMondayOfWeek(new Date());
+      state.currentPlan = Array.from({ length: CONFIG.PLAN_WEEKS }, (_, w) => {
+        const ws = new Date(monday);
+        ws.setDate(monday.getDate() + w * 7);
+        return {
+          weekNumber: w + 1,
+          startDate: ws.toISOString().split('T')[0],
+          days: w === 0 ? oldDays : generatePlan({ ...(state.user || state.onboardingData), _weekIndex: w })
+        };
+      });
+      saveState();
+    }
+
+    // Ensure trainingDays exists on loaded user
+    if (state.user && !state.user.trainingDays) state.user.trainingDays = [0, 1, 2, 3, 4];
+
+    state.viewingWeekIndex = findCurrentWeekIndex();
     return true;
   } catch (err) {
     console.warn('State korrupt — starte mit Onboarding:', err);
@@ -177,143 +210,149 @@ const EXERCISE_LIBRARY = {
 };
 
 function generatePlan(data) {
-  const days = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  const dayNames = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
   const plan = {};
-  
-  const totalKraft = data.weeklyVolume.kraft;
-  const totalLauf = data.weeklyVolume.lauf;
-  const totalRad = data.weeklyVolume.rad;
-  const totalSchwimm = data.weeklyVolume.schwimm;
-  
-  // Initialize all days as rest
-  days.forEach((d, i) => {
-    plan[i] = { day: d, workouts: [] };
-  });
-  
-  // Strategy: Distribute workouts intelligently
-  // Rule 1: Don't put intervals after legs (24h gap)
-  // Rule 2: Long run gets a pre-day with no legs
-  // Rule 3: Rest days are placed strategically
-  
-  let kraftCount = totalKraft;
-  let laufCount = totalLauf;
-  let radCount = totalRad;
-  let schwimmCount = totalSchwimm;
-  
-  // KRAFT-Verteilung
-  const kraftDays = [];
-  if (kraftCount === 1) kraftDays.push(1); // Tue
-  else if (kraftCount === 2) kraftDays.push(1, 4); // Tue, Fri
-  else if (kraftCount === 3) {
-    if (totalLauf >= 2) {
-      kraftDays.push(0, 2, 6); // Mo, Mi, So - Long Run Sa, Legs So
-    } else {
-      kraftDays.push(0, 2, 4); // Mo, Mi, Fr
+  dayNames.forEach((d, i) => { plan[i] = { day: d, workouts: [] }; });
+
+  // Allowed training days; Mon=0 … Sun=6
+  const tDays = (data.trainingDays && data.trainingDays.length > 0)
+    ? [...data.trainingDays].sort((a, b) => a - b)
+    : [0, 1, 2, 3, 4, 5, 6];
+
+  const hasSport = s => !data.sports || data.sports.includes(s);
+  const nKraft   = hasSport('kraft')  ? (data.weeklyVolume.kraft  || 0) : 0;
+  const nLauf    = hasSport('lauf')   ? (data.weeklyVolume.lauf   || 0) : 0;
+  const nRad     = hasSport('rad')    ? (data.weeklyVolume.rad    || 0) : 0;
+  const nSchwimm = hasSport('schwimm')? (data.weeklyVolume.schwimm || 0) : 0;
+  const weekIdx = data._weekIndex || 0;
+
+  // Pick n evenly-spread indices from tDays, honouring exclusions
+  function pickSpread(n, exclude = []) {
+    const pool = tDays.filter(d => !exclude.includes(d));
+    if (!pool.length || n <= 0) return [];
+    const result = [];
+    const step = pool.length / n;
+    for (let i = 0; i < n; i++) {
+      const d = pool[Math.min(Math.round(i * step), pool.length - 1)];
+      if (!result.includes(d)) result.push(d);
     }
-  } else if (kraftCount === 4) kraftDays.push(0, 2, 4, 6);
-  else if (kraftCount >= 5) kraftDays.push(0, 1, 3, 4, 6);
-  
-  // Generate Kraft workouts
-  const splits = data.experience === 'beginner' || kraftCount <= 2 
+    // Fill any missing slots
+    for (const d of pool) {
+      if (result.length >= n) break;
+      if (!result.includes(d)) result.push(d);
+    }
+    return result.sort((a, b) => a - b);
+  }
+
+  // ── KRAFT ────────────────────────────────────────────────────────────
+  const splits = (data.experience === 'beginner' || nKraft <= 2)
     ? ['full', 'full', 'full', 'full', 'full']
-    : kraftCount === 3
-      ? ['full', 'upper', 'legs']
-      : kraftCount === 4
-        ? ['push', 'pull', 'legs', 'upper']
-        : ['push', 'pull', 'legs', 'upper', 'full'];
-  
+    : nKraft === 3 ? ['full', 'upper', 'legs']
+    : nKraft === 4 ? ['push', 'pull', 'legs', 'upper']
+    : ['push', 'pull', 'legs', 'upper', 'full'];
+
+  const kraftDays = pickSpread(nKraft);
   kraftDays.forEach((dayIdx, i) => {
     const split = splits[i] || 'full';
-    const exerciseKey = `${split}_${data.location === 'home' ? 'home' : 'gym'}`;
-    const exercises = EXERCISE_LIBRARY[exerciseKey] || EXERCISE_LIBRARY.full_gym;
-    
+    const exKey = `${split}_${data.location === 'home' ? 'home' : 'gym'}`;
+    const exercises = EXERCISE_LIBRARY[exKey] || EXERCISE_LIBRARY.full_gym;
     plan[dayIdx].workouts.push({
       id: `kraft-${dayIdx}`,
       type: 'kraft',
       title: `Kraft — ${split === 'push' ? 'Push' : split === 'pull' ? 'Pull' : split === 'legs' ? 'Legs' : split === 'upper' ? 'Oberkörper' : 'Ganzkörper'}`,
       duration: CONFIG.WORKOUT_DURATIONS.KRAFT_BASE + (data.experience === 'advanced' ? CONFIG.WORKOUT_DURATIONS.KRAFT_ADVANCED_BONUS : 0),
       time: 'Abend',
-      exercises: exercises.map((e, idx) => ({
-        id: `ex-${dayIdx}-${idx}`,
-        ...e
-      })),
+      exercises: exercises.map((e, idx) => ({ id: `ex-${dayIdx}-${idx}`, ...e })),
       isLegs: split === 'legs' || split === 'full'
     });
   });
-  
-  // LAUF-Verteilung — wichtig: kein Intervall nach Legs
-  if (laufCount > 0) {
-    const laufTypes = [];
-    if (laufCount >= 1) laufTypes.push('long');
-    if (laufCount >= 2) laufTypes.push('intervall');
-    if (laufCount >= 3) laufTypes.push('z2');
-    if (laufCount >= 4) laufTypes.push('tempo');
-    
-    // Find day for long run (Saturday preferred, day after rest if possible)
+
+  const legsDays = kraftDays.filter((_, i) => splits[i] === 'legs' || splits[i] === 'full');
+  const freeDays = tDays.filter(d => !kraftDays.includes(d));
+
+  // ── LAUF ─────────────────────────────────────────────────────────────
+  if (nLauf > 0) {
+    const laufTypes = ['long', 'intervall', 'z2', 'tempo'].slice(0, nLauf);
+    const longDuration = CONFIG.LONG_RUN_DURATIONS[weekIdx] || CONFIG.WORKOUT_DURATIONS.LAUF_LONG;
+
+    // Long Run: last free training day whose previous training day has no legs
     if (laufTypes.includes('long')) {
-      const longDay = laufCount >= 3 || !kraftDays.includes(5) ? 5 : 6; // Sat or Sun
-      plan[longDay].workouts.push(createLaufWorkout('long', longDay, data));
+      const revFree = [...freeDays].reverse();
+      let longDay = revFree.find(d => {
+        const prevT = tDays[tDays.indexOf(d) - 1];
+        return prevT === undefined || !legsDays.includes(prevT);
+      });
+      if (longDay === undefined) longDay = revFree[0] ?? tDays[tDays.length - 1];
+      const w = createLaufWorkout('long', longDay, data);
+      w.duration = longDuration;
+      plan[longDay].workouts.push(w);
     }
-    
+
+    // Intervall: free day not directly after a legs day
     if (laufTypes.includes('intervall')) {
-      // Find day NOT after legs
-      let day = 1; // Tue default
-      const legsDays = kraftDays.filter((_, i) => splits[i] === 'legs' || splits[i] === 'full');
-      // Try Wed if Tue is legs day
-      if (kraftDays.includes(1) && (splits[kraftDays.indexOf(1)] === 'legs' || splits[kraftDays.indexOf(1)] === 'full')) {
-        day = 3; // Thu instead
-      }
-      // Avoid placing on a leg day
-      while (legsDays.some(d => Math.abs(d - day) === 1 && d < day)) {
-        day++;
-      }
-      if (day > 5) day = 3;
-      plan[day].workouts.push(createLaufWorkout('intervall', day, data));
+      const notAfterLegs = freeDays.filter(d => {
+        const prev = d - 1;
+        return !legsDays.includes(prev) && !plan[d].workouts.some(w => w.type === 'lauf');
+      });
+      const day = notAfterLegs[0]
+        ?? freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'))
+        ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'));
+      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('intervall', day, data));
     }
-    
+
+    // Z2: free day preferred; smart-pair with non-legs kraft day if no free day left
     if (laufTypes.includes('z2')) {
-      const day = 3; // Thu
-      if (!plan[day].workouts.length) {
-        plan[day].workouts.push(createLaufWorkout('z2', day, data));
+      const freeForZ2 = freeDays.filter(d => !plan[d].workouts.some(w => w.type === 'lauf'));
+      let day = freeForZ2[0];
+      if (day === undefined) {
+        // Smart-pair: Z2 is low-intensity, safe to add after a non-legs kraft session
+        day = kraftDays.find(d => !legsDays.includes(d) && !plan[d].workouts.some(w => w.type === 'lauf'));
       }
+      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('z2', day, data));
     }
-    
+
+    // Tempo: next available free day
     if (laufTypes.includes('tempo')) {
-      const day = 4; // Fri
-      if (!plan[day].workouts.find(w => w.type === 'lauf')) {
-        plan[day].workouts.push(createLaufWorkout('tempo', day, data));
-      }
+      const day = freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'))
+        ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'));
+      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('tempo', day, data));
     }
   }
-  
-  // RAD-Verteilung
-  if (radCount > 0) {
-    const radDays = [];
-    if (radCount === 1) radDays.push(3); // Thu
-    else if (radCount === 2) radDays.push(2, 5);
-    else radDays.push(1, 3, 5);
-    
-    radDays.forEach((dayIdx, i) => {
-      // If kraft is also on this day, mark as combined
-      const isCombined = plan[dayIdx].workouts.some(w => w.type === 'kraft');
-      plan[dayIdx].workouts.push({
-        id: `rad-${dayIdx}`,
+
+  // ── RAD ──────────────────────────────────────────────────────────────
+  if (nRad > 0) {
+    const radTypes = ['z2', 'tempo', 'long'].slice(0, nRad);
+    radTypes.forEach(type => {
+      const freeForRad = tDays.filter(d => !plan[d].workouts.some(w => w.type === 'rad' || w.type === 'lauf'));
+      let day = freeForRad.find(d => !kraftDays.includes(d));
+      if (day === undefined) {
+        // Smart-pair: Z2/Tempo rad after non-legs kraft
+        day = kraftDays.find(d => !legsDays.includes(d) && !plan[d].workouts.some(w => w.type === 'rad'));
+      }
+      if (day === undefined) day = freeForRad[0] ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'rad'));
+      if (day === undefined) return;
+      const isCombined = plan[day].workouts.some(w => w.type === 'kraft');
+      plan[day].workouts.push({
+        id: `rad-${day}`,
         type: 'rad',
-        title: i === 0 ? 'Rad — Z2 Grundlage' : i === 1 ? 'Rad — Tempo' : 'Rad — Long',
-        duration: i === 2 ? CONFIG.WORKOUT_DURATIONS.RAD_LONG : CONFIG.WORKOUT_DURATIONS.RAD_Z2,
+        title: type === 'z2' ? 'Rad — Z2 Grundlage' : type === 'tempo' ? 'Rad — Tempo' : 'Rad — Long',
+        duration: type === 'long' ? CONFIG.WORKOUT_DURATIONS.RAD_LONG : CONFIG.WORKOUT_DURATIONS.RAD_Z2,
         time: isCombined ? 'Nach Kraft' : 'Morgen',
-        details: i === 0 ? 'HF-Zone 2, locker' : i === 1 ? 'Sweet Spot 88-93% FTP' : 'Lockerer Long Ride',
+        details: type === 'z2' ? 'HF-Zone 2, locker' : type === 'tempo' ? 'Sweet Spot 88-93% FTP' : 'Lockerer Long Ride',
         exercises: []
       });
     });
   }
-  
-  // SCHWIMM-Verteilung
-  if (schwimmCount > 0) {
-    const schwimmDays = schwimmCount === 1 ? [2] : [2, 5];
-    schwimmDays.forEach((dayIdx, i) => {
-      plan[dayIdx].workouts.push({
-        id: `schwimm-${dayIdx}`,
+
+  // ── SCHWIMM ───────────────────────────────────────────────────────────
+  if (nSchwimm > 0) {
+    for (let i = 0; i < nSchwimm; i++) {
+      const freeForSchwimm = tDays.filter(d => !plan[d].workouts.some(w => w.type === 'schwimm'));
+      const day = freeForSchwimm.find(d => !kraftDays.includes(d))
+        ?? freeForSchwimm[0]
+        ?? tDays[i % tDays.length];
+      plan[day].workouts.push({
+        id: `schwimm-${day}`,
         type: 'schwimm',
         title: 'Schwimmen — Technik & Ausdauer',
         duration: CONFIG.WORKOUT_DURATIONS.SCHWIMMEN,
@@ -321,10 +360,23 @@ function generatePlan(data) {
         details: i === 0 ? '8x100m + Technik' : '2000m Long Swim',
         exercises: []
       });
-    });
+    }
   }
-  
+
   return plan;
+}
+
+function generate4WeekPlan(data) {
+  const monday = getMondayOfWeek(new Date());
+  return Array.from({ length: CONFIG.PLAN_WEEKS }, (_, w) => {
+    const weekStart = new Date(monday);
+    weekStart.setDate(monday.getDate() + w * 7);
+    return {
+      weekNumber: w + 1,
+      startDate: weekStart.toISOString().split('T')[0],
+      days: generatePlan({ ...data, _weekIndex: w })
+    };
+  });
 }
 
 function createLaufWorkout(type, dayIdx, data) {
@@ -371,6 +423,7 @@ const ONBOARDING_STEPS = [
   'experience',
   'goal',
   'volume',
+  'trainingdays',
   'name',
   'generating',
   'complete'
@@ -630,6 +683,32 @@ function renderOnboarding() {
     `;
   }
   
+  else if (step === 'trainingdays') {
+    const td = state.onboardingData.trainingDays;
+    const vol = state.onboardingData.weeklyVolume;
+    const sports = state.onboardingData.sports;
+    const totalUnits = Object.entries(vol).filter(([k]) => sports.includes(k)).reduce((s, [_, v]) => s + parseInt(v), 0);
+    const dayLabels = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+    const tooFew = td.length < totalUnits;
+    html += `
+      <h2 class="step-title">Wann trainierst <span class="accent">du</span>?</h2>
+      <p class="step-desc">Wähle deine Trainingstage — der Plan wird nur auf diesen Tagen geplant.</p>
+      <div class="training-days-grid">
+        ${dayLabels.map((label, idx) => `
+          <div class="day-pill ${td.includes(idx) ? 'selected' : ''}" onclick="toggleTrainingDay(${idx})">${label}</div>
+        `).join('')}
+      </div>
+      <div id="trainingdays-hint" style="text-align: center; margin: 16px 0; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: ${tooFew ? 'var(--danger)' : 'var(--text-secondary)'};">
+        ${td.length} Tage gewählt · ${totalUnits} Einheiten geplant${tooFew ? ' ⚠ zu wenig Tage' : ''}
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="prevStep()">Zurück</button>
+        <button class="btn btn-primary" id="onboarding-next-btn" onclick="nextStep()" ${td.length === 0 ? 'disabled' : ''}>Weiter</button>
+      </div>
+    </div>
+    `;
+  }
+
   else if (step === 'name') {
     html += `
       <h2 class="step-title">Wie heisst <span class="accent">du</span>?</h2>
@@ -664,11 +743,12 @@ function renderOnboarding() {
     </div>
     `;
     setTimeout(() => {
-      state.currentPlan = generatePlan(state.onboardingData);
+      state.currentPlan = generate4WeekPlan(state.onboardingData);
       state.user = {
         name: state.onboardingData.name || 'Athlet',
         ...state.onboardingData
       };
+      state.viewingWeekIndex = 0;
       saveState();
       state.onboardingStep++;
       renderOnboarding();
@@ -747,6 +827,28 @@ function updateVolume(sport, val) {
   if (btn) btn.disabled = total === 0;
 }
 
+function toggleTrainingDay(idx) {
+  const td = state.onboardingData.trainingDays;
+  const pos = td.indexOf(idx);
+  if (pos >= 0) td.splice(pos, 1);
+  else td.push(idx);
+  const el = document.querySelectorAll('.day-pill')[idx];
+  if (el) el.classList.toggle('selected', pos < 0);
+
+  const vol = state.onboardingData.weeklyVolume;
+  const sports = state.onboardingData.sports;
+  const totalUnits = Object.entries(vol).filter(([k]) => sports.includes(k)).reduce((s, [_, v]) => s + parseInt(v), 0);
+  const tooFew = td.length < totalUnits;
+
+  const hint = document.getElementById('trainingdays-hint');
+  if (hint) {
+    hint.style.color = tooFew ? 'var(--danger)' : 'var(--text-secondary)';
+    hint.textContent = `${td.length} Tage gewählt · ${totalUnits} Einheiten geplant${tooFew ? ' ⚠ zu wenig Tage' : ''}`;
+  }
+  const btn = document.getElementById('onboarding-next-btn');
+  if (btn) btn.disabled = td.length === 0;
+}
+
 function completeOnboarding() {
   const nameInput = document.getElementById('name-input');
   state.onboardingData.name = nameInput?.value || 'Athlet';
@@ -771,6 +873,32 @@ function getDayIndex(date = new Date()) {
   return d === 0 ? 6 : d - 1;
 }
 
+function getMondayOfWeek(date) {
+  const d = new Date(date);
+  const day = d.getDay(); // 0=Sun
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function findCurrentWeekIndex() {
+  if (!Array.isArray(state.currentPlan) || !state.currentPlan.length) return 0;
+  const todayStr = getTodayKey();
+  for (let i = 0; i < state.currentPlan.length; i++) {
+    const ws = state.currentPlan[i].startDate;
+    const we = new Date(ws + 'T00:00:00');
+    we.setDate(we.getDate() + 6);
+    if (ws <= todayStr && todayStr <= we.toISOString().split('T')[0]) return i;
+  }
+  // If today is beyond all weeks, return last
+  return state.currentPlan.length - 1;
+}
+
+function getViewedWeek() {
+  if (!Array.isArray(state.currentPlan)) return null;
+  return state.currentPlan[state.viewingWeekIndex] || state.currentPlan[0];
+}
+
 function getGreeting() {
   const h = new Date().getHours();
   if (h < 12) return 'Guten Morgen';
@@ -781,103 +909,126 @@ function getGreeting() {
 function renderHome() {
   state.currentTab = 'home';
   updateNav();
-  
+
+  const week = getViewedWeek();
+  if (!week) { document.getElementById('content').innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-secondary);">Kein Plan vorhanden.</div>'; return; }
+
+  const currentWeekIdx = findCurrentWeekIndex();
+  const isCurrentWeek = state.viewingWeekIndex === currentWeekIdx;
   const todayIdx = getDayIndex();
-  const today = state.currentPlan[todayIdx];
   const todayKey = getTodayKey();
-  const completedToday = (state.workoutLogs[todayKey] || {});
-  
+  const completedToday = state.workoutLogs[todayKey] || {};
+
+  // Stats for viewed week
+  const weekStartDate = week.startDate;
   let totalThisWeek = 0;
   let completedThisWeek = 0;
-  Object.values(state.currentPlan).forEach(d => {
+  Object.entries(week.days).forEach(([idx, d]) => {
     totalThisWeek += d.workouts.length;
+    const dayDate = getDateForDayIndex(parseInt(idx), weekStartDate);
+    const dk = dayDate.toISOString().split('T')[0];
+    const logs = state.workoutLogs[dk] || {};
+    completedThisWeek += Object.values(logs).filter(w => w.completed).length;
   });
-  Object.values(state.workoutLogs).forEach(dayLogs => {
-    completedThisWeek += Object.values(dayLogs).filter(w => w.completed).length;
-  });
-  
-  const checkinDone = state.todayCheckin && state.todayCheckin.date === todayKey;
+
+  const checkinDone = isCurrentWeek && state.todayCheckin && state.todayCheckin.date === todayKey;
+
+  // Week navigation label
+  const weekStart = new Date(weekStartDate + 'T00:00:00');
+  const weekEnd = new Date(weekStartDate + 'T00:00:00');
+  weekEnd.setDate(weekEnd.getDate() + 6);
+  const weekLabel = `KW ${week.weekNumber} · ${weekStart.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })} – ${weekEnd.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })}`;
+
+  const today = isCurrentWeek ? week.days[todayIdx] : null;
   
   let html = `
     <div class="dashboard-greeting">
-      <div class="greeting-tag">${new Date().toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
-      <div class="greeting-text">${getGreeting()}, <span class="accent">${state.user.name}</span>.</div>
+      <div class="greeting-tag">${isCurrentWeek ? new Date().toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' }) : weekLabel}</div>
+      <div class="greeting-text">${isCurrentWeek ? `${getGreeting()}, <span class="accent">${state.user.name}</span>.` : `Woche <span class="accent">${week.weekNumber}</span>`}</div>
     </div>
-    
+
+    <div class="week-nav">
+      <button class="week-nav-btn" onclick="navigateWeek(-1)" ${state.viewingWeekIndex === 0 ? 'disabled' : ''}>←</button>
+      <div class="week-nav-label">${isCurrentWeek ? 'Diese Woche' : weekLabel}</div>
+      <button class="week-nav-btn" onclick="navigateWeek(1)" ${state.viewingWeekIndex >= state.currentPlan.length - 1 ? 'disabled' : ''}>→</button>
+    </div>
+
     <div class="stats-bar">
       <div class="stat">
         <div class="stat-value accent">${completedThisWeek}</div>
-        <div class="stat-label">Diese Woche</div>
+        <div class="stat-label">${isCurrentWeek ? 'Diese Woche' : 'Erledigt'}</div>
       </div>
       <div class="stat">
         <div class="stat-value">${totalThisWeek}</div>
-        <div class="stat-label">Total geplant</div>
+        <div class="stat-label">Geplant</div>
       </div>
       <div class="stat">
         <div class="stat-value">${getStreak()}</div>
         <div class="stat-label">🔥 Streak</div>
       </div>
     </div>
-    
-    <div class="checkin-card" onclick="openCheckin()">
-      <div class="checkin-row">
-        <div>
-          <div class="checkin-label">${checkinDone ? 'CHECK-IN GEMACHT' : 'TÄGLICHER CHECK-IN'}</div>
-          <div class="checkin-text">${checkinDone ? `Du fühlst dich ${getMoodLabel(state.todayCheckin.mood)}` : 'Wie fühlst du dich heute?'}</div>
-        </div>
-        <div class="checkin-arrow">${checkinDone ? '✓' : '→'}</div>
-      </div>
-      ${checkinDone ? `
-        <div class="checkin-status-row">
-          <div class="checkin-pill">Energie ${state.todayCheckin.energy}/5</div>
-          <div class="checkin-pill">Schlaf ${state.todayCheckin.sleep}/5</div>
-          ${state.todayCheckin.soreness > 2 ? '<div class="checkin-pill">⚡ Plan adaptiert</div>' : ''}
-        </div>
-      ` : ''}
-    </div>
   `;
-  
-  // Today's workouts
-  if (today.workouts.length > 0) {
-    html += `<div class="section">
-      <div class="section-header">
-        <h3 class="section-title">HEUTE — ${today.day}</h3>
-      </div>
-      <div class="workout-list">`;
-    today.workouts.forEach(w => {
-      html += renderWorkoutCard(w, todayKey, completedToday[w.id]?.completed);
-    });
-    html += `</div></div>`;
-  } else {
-    html += `<div class="section">
-      <div class="section-header">
-        <h3 class="section-title">HEUTE — ${today.day}</h3>
-      </div>
-      <div class="workout-card rest" style="text-align: center;">
-        <div style="padding: 20px;">
-          <div style="font-size: 32px; margin-bottom: 8px;">😴</div>
-          <div style="font-weight: 600; margin-bottom: 4px;">Pause-Tag</div>
-          <div style="font-size: 13px; color: var(--text-secondary);">Aktive Erholung empfohlen — Spaziergang oder Stretching</div>
+
+  // Check-in (only for current week)
+  if (isCurrentWeek) {
+    html += `
+      <div class="checkin-card" onclick="openCheckin()">
+        <div class="checkin-row">
+          <div>
+            <div class="checkin-label">${checkinDone ? 'CHECK-IN GEMACHT' : 'TÄGLICHER CHECK-IN'}</div>
+            <div class="checkin-text">${checkinDone ? `Du fühlst dich ${getMoodLabel(state.todayCheckin.mood)}` : 'Wie fühlst du dich heute?'}</div>
+          </div>
+          <div class="checkin-arrow">${checkinDone ? '✓' : '→'}</div>
         </div>
+        ${checkinDone ? `
+          <div class="checkin-status-row">
+            <div class="checkin-pill">Energie ${state.todayCheckin.energy}/5</div>
+            <div class="checkin-pill">Schlaf ${state.todayCheckin.sleep}/5</div>
+            ${state.todayCheckin.soreness > 2 ? '<div class="checkin-pill">⚡ Plan adaptiert</div>' : ''}
+          </div>
+        ` : ''}
       </div>
-    </div>`;
+    `;
   }
-  
-  // Week overview
+
+  // Today's workouts (only on current week)
+  if (isCurrentWeek && today) {
+    if (today.workouts.length > 0) {
+      html += `<div class="section">
+        <div class="section-header"><h3 class="section-title">HEUTE — ${today.day}</h3></div>
+        <div class="workout-list">`;
+      today.workouts.forEach(w => {
+        html += renderWorkoutCard(w, todayKey, completedToday[w.id]?.completed);
+      });
+      html += `</div></div>`;
+    } else {
+      html += `<div class="section">
+        <div class="section-header"><h3 class="section-title">HEUTE — ${today.day}</h3></div>
+        <div class="workout-card rest" style="text-align:center;">
+          <div style="padding:20px;">
+            <div style="font-size:32px;margin-bottom:8px;">😴</div>
+            <div style="font-weight:600;margin-bottom:4px;">Pause-Tag</div>
+            <div style="font-size:13px;color:var(--text-secondary);">Aktive Erholung empfohlen — Spaziergang oder Stretching</div>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+
+  // Week overview grid
   html += `<div class="section">
-    <div class="section-header">
-      <h3 class="section-title">WOCHE</h3>
-    </div>
+    <div class="section-header"><h3 class="section-title">WOCHENPLAN</h3></div>
     <div class="week-grid">`;
-  
-  Object.entries(state.currentPlan).forEach(([idx, day]) => {
-    const isToday = parseInt(idx) === todayIdx;
+
+  Object.entries(week.days).forEach(([idx, day]) => {
+    const dayIdxInt = parseInt(idx);
+    const isToday = isCurrentWeek && dayIdxInt === todayIdx;
     const hasWorkout = day.workouts.length > 0;
-    const dayDate = getDateForDayIndex(parseInt(idx));
-    const dayKey = dayDate.toISOString().split('T')[0];
-    const dayLogs = state.workoutLogs[dayKey] || {};
+    const dayDate = getDateForDayIndex(dayIdxInt, weekStartDate);
+    const dk = dayDate.toISOString().split('T')[0];
+    const dayLogs = state.workoutLogs[dk] || {};
     const allCompleted = hasWorkout && day.workouts.every(w => dayLogs[w.id]?.completed);
-    
+
     html += `
       <div class="day-cell ${isToday ? 'today' : ''}" onclick="openDay(${idx})">
         <div class="day-name">${day.day}</div>
@@ -886,41 +1037,50 @@ function renderHome() {
       </div>
     `;
   });
-  
-  html += `</div>
-  </div>`;
-  
-  // Upcoming
-  const upcoming = [];
-  for (let i = 1; i <= 3; i++) {
-    const idx = (todayIdx + i) % 7;
-    const day = state.currentPlan[idx];
-    if (day.workouts.length > 0) {
-      upcoming.push({ idx, day });
+
+  html += `</div></div>`;
+
+  // Upcoming (rest of current week, only if viewing current week)
+  if (isCurrentWeek) {
+    const upcoming = [];
+    for (let i = 1; i <= 3; i++) {
+      const idx = (todayIdx + i) % 7;
+      const day = week.days[idx];
+      if (day && day.workouts.length > 0) upcoming.push({ idx, day });
+    }
+    if (upcoming.length > 0) {
+      html += `<div class="section">
+        <div class="section-header"><h3 class="section-title">ALS NÄCHSTES</h3></div>
+        <div class="workout-list">`;
+      upcoming.slice(0, 2).forEach(({ idx, day }) => {
+        day.workouts.forEach(w => {
+          const dayDate = getDateForDayIndex(idx, weekStartDate);
+          const dk = dayDate.toISOString().split('T')[0];
+          html += `<div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted);letter-spacing:0.15em;margin-top:4px;">${day.day.toUpperCase()} · ${dayDate.toLocaleDateString('de-CH',{day:'numeric',month:'short'}).toUpperCase()}</div>`;
+          html += renderWorkoutCard(w, dk, false);
+        });
+      });
+      html += `</div></div>`;
     }
   }
-  
-  if (upcoming.length > 0) {
-    html += `<div class="section">
-      <div class="section-header">
-        <h3 class="section-title">ALS NÄCHSTES</h3>
-      </div>
-      <div class="workout-list">`;
-    upcoming.slice(0, 2).forEach(({ idx, day }) => {
-      day.workouts.forEach(w => {
-        const dayDate = getDateForDayIndex(idx);
-        const dayKey = dayDate.toISOString().split('T')[0];
-        html += `<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); letter-spacing: 0.15em; margin-top: 4px;">${day.day.toUpperCase()} · ${dayDate.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' }).toUpperCase()}</div>`;
-        html += renderWorkoutCard(w, dayKey, false);
-      });
-    });
-    html += `</div></div>`;
-  }
-  
+
   document.getElementById('content').innerHTML = html;
 }
 
-function getDateForDayIndex(idx) {
+function navigateWeek(dir) {
+  const next = state.viewingWeekIndex + dir;
+  if (next < 0 || next >= state.currentPlan.length) return;
+  state.viewingWeekIndex = next;
+  renderHome();
+}
+
+function getDateForDayIndex(idx, weekStartDate) {
+  if (weekStartDate) {
+    const d = new Date(weekStartDate + 'T00:00:00');
+    d.setDate(d.getDate() + idx);
+    return d;
+  }
+  // Fallback: current calendar week
   const today = new Date();
   const todayIdx = getDayIndex(today);
   const diff = idx - todayIdx;
@@ -1091,14 +1251,16 @@ function saveCheckin() {
 // --- Helpers ---
 
 function findWorkout(workoutId, dayKey) {
-  // Custom workouts store their full metadata in the log
   const logEntry = (state.workoutLogs[dayKey] || {})[workoutId];
   if (logEntry && logEntry.isCustom) return logEntry.customMeta;
-  // Plan workouts
   let found = null;
-  Object.values(state.currentPlan).forEach(day =>
-    day.workouts.forEach(w => { if (w.id === workoutId) found = w; })
-  );
+  if (Array.isArray(state.currentPlan)) {
+    state.currentPlan.forEach(week =>
+      Object.values(week.days).forEach(day =>
+        day.workouts.forEach(w => { if (w.id === workoutId) found = w; })
+      )
+    );
+  }
   return found;
 }
 
@@ -1511,19 +1673,19 @@ function completeWorkout(dayKey, workoutId) {
 // --- Day Detail ---
 
 function openDay(idx) {
-  const day = state.currentPlan[idx];
-  const dayDate = getDateForDayIndex(idx);
+  const week = getViewedWeek();
+  const day = week.days[idx];
+  const dayDate = getDateForDayIndex(idx, week.startDate);
   const dayKey = dayDate.toISOString().split('T')[0];
   const logs = state.workoutLogs[dayKey] || {};
-  
+
   let html = `<div class="modal-body">`;
-  
-  if (day.workouts.length === 0) {
+  if (!day || day.workouts.length === 0) {
     html += `
       <div class="empty-state">
         <div class="empty-icon">😴</div>
-        <div style="font-size: 18px; font-weight: 600; margin-bottom: 8px;">Pause-Tag</div>
-        <div>Heute Erholung — dein Körper baut Muskeln und Ausdauer am Pause-Tag.</div>
+        <div style="font-size:18px;font-weight:600;margin-bottom:8px;">Pause-Tag</div>
+        <div>Erholung — dein Körper baut Muskeln und Ausdauer am Pause-Tag.</div>
       </div>
     `;
   } else {
@@ -1533,7 +1695,6 @@ function openDay(idx) {
     });
     html += `</div>`;
   }
-  
   html += `</div>`;
   showModal(html, `${day.day} · ${dayDate.toLocaleDateString('de-CH', { day: 'numeric', month: 'long' })}`);
 }
@@ -1597,7 +1758,7 @@ function renderStats() {
           const height = (v / total) * 100;
           return `<div class="bar-item">
             <div class="bar ${type}" style="height: ${height}%"></div>
-            <div class="bar-label">${SPORT_INFO[type].label.substr(0, 4)}</div>
+            <div class="bar-label">${SPORT_INFO[type].label}</div>
           </div>`;
         }).join('')}
       </div>
@@ -1649,81 +1810,295 @@ function renderStats() {
 function renderProfile() {
   state.currentTab = 'profile';
   updateNav();
-  
+
   const u = state.user;
   const sportLabels = u.sports.map(s => `${SPORT_INFO[s].icon} ${SPORT_INFO[s].label}`).join(' · ');
-  
+  const dayNames = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  const trainingDayLabels = (u.trainingDays || []).sort((a,b)=>a-b).map(d => dayNames[d]).join(', ');
+
+  function editBtn(fn) {
+    return `<button class="profile-edit-btn" onclick="${fn}">✎</button>`;
+  }
+
   let html = `
     <div class="dashboard-greeting">
       <div class="greeting-tag">DEIN PROFIL</div>
       <div class="greeting-text">${u.name}</div>
     </div>
-    
+
     <div class="stat-card-big">
-      <div class="stat-card-label" style="margin-bottom: 12px;">SPORTARTEN</div>
-      <div style="font-size: 16px;">${sportLabels}</div>
+      <div class="profile-card-header">
+        <div class="stat-card-label">SPORTARTEN</div>
+        ${editBtn('editSports()')}
+      </div>
+      <div style="font-size:16px;margin-top:8px;">${sportLabels}</div>
     </div>
-    
+
     <div class="stat-card-big">
-      <div class="stat-card-label" style="margin-bottom: 12px;">ZIEL</div>
-      <div style="font-size: 16px;">${
+      <div class="profile-card-header">
+        <div class="stat-card-label">WÖCHENTLICHES VOLUMEN</div>
+        ${editBtn('editVolume()')}
+      </div>
+      ${Object.entries(u.weeklyVolume).filter(([_, v]) => v > 0).map(([k, v]) => `
+        <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:14px;">
+          <span>${SPORT_INFO[k].icon} ${SPORT_INFO[k].label}</span>
+          <span style="font-family:'JetBrains Mono',monospace;color:var(--accent);">${v}× / Wo</span>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="stat-card-big">
+      <div class="profile-card-header">
+        <div class="stat-card-label">TRAININGSTAGE</div>
+        ${editBtn('editTrainingDays()')}
+      </div>
+      <div style="font-size:15px;margin-top:8px;">${trainingDayLabels || '—'}</div>
+    </div>
+
+    <div class="stat-card-big">
+      <div class="profile-card-header">
+        <div class="stat-card-label">ZIEL</div>
+        ${editBtn('editGoal()')}
+      </div>
+      <div style="font-size:16px;margin-top:8px;">${
         u.goal === 'recomp' ? '🎯 Body Recomposition' :
         u.goal === 'race' ? '🏁 Wettkampf-Vorbereitung' :
         u.goal === 'strength' ? '💪 Kraft & Muskelaufbau' :
         '✨ Allgemeine Fitness'
       }</div>
     </div>
-    
+
     <div class="stat-card-big">
-      <div class="stat-card-label" style="margin-bottom: 12px;">LEVEL</div>
-      <div style="font-size: 16px;">${
+      <div class="profile-card-header">
+        <div class="stat-card-label">LEVEL</div>
+        ${editBtn('editExperience()')}
+      </div>
+      <div style="font-size:16px;margin-top:8px;">${
         u.experience === 'beginner' ? '🌱 Einsteiger' :
         u.experience === 'intermediate' ? '⚡ Fortgeschritten' :
         '🔥 Erfahren'
       }</div>
     </div>
-    
+
     <div class="stat-card-big">
-      <div class="stat-card-label" style="margin-bottom: 12px;">TRAININGSORT</div>
-      <div style="font-size: 16px;">${
+      <div class="profile-card-header">
+        <div class="stat-card-label">TRAININGSORT</div>
+        ${editBtn('editLocation()')}
+      </div>
+      <div style="font-size:16px;margin-top:8px;">${
         u.location === 'gym' ? '🏋️ Fitnessstudio' :
         u.location === 'home' ? '🏠 Zuhause' :
         '🌳 Outdoor'
       }</div>
     </div>
-    
-    <div class="stat-card-big">
-      <div class="stat-card-label" style="margin-bottom: 12px;">WÖCHENTLICHES VOLUMEN</div>
-      ${Object.entries(u.weeklyVolume).filter(([_, v]) => v > 0).map(([k, v]) => `
-        <div style="display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px;">
-          <span>${SPORT_INFO[k].icon} ${SPORT_INFO[k].label}</span>
-          <span style="font-family: 'JetBrains Mono', monospace; color: var(--accent);">${v}× / Wo</span>
-        </div>
-      `).join('')}
-    </div>
-    
-    <button class="btn btn-secondary" onclick="openRetroLogger()" style="margin-top: 16px;">
+
+    <button class="btn btn-secondary" onclick="openRetroLogger()" style="margin-top:16px;">
       📅 Workout nachtragen
     </button>
-    <button class="btn btn-secondary" onclick="regeneratePlan()" style="margin-top: 8px;">
+    <button class="btn btn-secondary" onclick="regeneratePlan()" style="margin-top:8px;">
       🔄 Plan neu generieren
     </button>
-    <button class="btn btn-ghost" onclick="resetApp()" style="margin-top: 8px; color: var(--danger);">
+    <button class="btn btn-ghost" onclick="resetApp()" style="margin-top:8px;color:var(--danger);">
       Alles zurücksetzen
     </button>
-    
-    <div style="text-align: center; margin-top: 32px; padding: 24px;">
-      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted); letter-spacing: 0.2em;">HYBRID · PROTOTYP v0.1</div>
-      <div style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">Ein Konzept-Test der Hybrid-Training-App-Idee</div>
+
+    <div style="text-align:center;margin-top:32px;padding:24px;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-muted);letter-spacing:0.2em;">HYBRID · PROTOTYP v0.1</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Ein Konzept-Test der Hybrid-Training-App-Idee</div>
     </div>
   `;
-  
+
   document.getElementById('content').innerHTML = html;
+}
+
+// --- Profile Edit Functions ---
+
+function _saveProfileAndRegenerate(changes, msg) {
+  Object.assign(state.user, changes);
+  state.currentPlan = generate4WeekPlan(state.user);
+  state.viewingWeekIndex = findCurrentWeekIndex();
+  saveState();
+  closeModal();
+  showToast(msg || 'Gespeichert — Plan angepasst ✨');
+  renderProfile();
+}
+
+function editSports() {
+  const cur = [...(state.user.sports || [])];
+  showModal(`
+    <div class="modal-body">
+      <p style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">Sportarten auswählen (mind. eine)</p>
+      <div class="choices">
+        ${[['kraft','💪','Krafttraining','Muskeln, Kraft'],['lauf','🏃','Laufen','5K bis Marathon'],['rad','🚴','Radfahren','Indoor oder Outdoor'],['schwimm','🏊','Schwimmen','Technik und Ausdauer']].map(([k,icon,title,sub]) => `
+          <div class="choice ${cur.includes(k)?'selected':''}" id="esport-${k}" onclick="(function(){const a=document.getElementById('esport-${k}');a.classList.toggle('selected');})()">
+            <div class="choice-icon">${icon}</div>
+            <div class="choice-content"><div class="choice-title">${title}</div><div class="choice-sub">${sub}</div></div>
+            <div class="choice-check"></div>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn btn-primary" style="margin-top:16px;" onclick="
+        const sports=['kraft','lauf','rad','schwimm'].filter(k=>document.getElementById('esport-'+k)?.classList.contains('selected'));
+        if(!sports.length){showToast('Mind. eine Sportart wählen');return;}
+        const vol={...state.user.weeklyVolume};
+        ['kraft','lauf','rad','schwimm'].forEach(k=>{if(!sports.includes(k))vol[k]=0;else if(!vol[k])vol[k]=k==='kraft'?3:k==='lauf'?2:1;});
+        _saveProfileAndRegenerate({sports,weeklyVolume:vol},'Sportarten gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Sportarten');
+}
+
+function editVolume() {
+  const u = state.user;
+  const vol = { ...u.weeklyVolume };
+  const sliders = [
+    { key: 'kraft', emoji: '💪', label: 'Krafttraining', max: 5 },
+    { key: 'lauf',  emoji: '🏃', label: 'Laufen', max: 5 },
+    { key: 'rad',   emoji: '🚴', label: 'Radfahren', max: 4 },
+    { key: 'schwimm', emoji: '🏊', label: 'Schwimmen', max: 3 }
+  ];
+  let sliderHTML = sliders.filter(s => u.sports.includes(s.key)).map(s => `
+    <div class="slider-container">
+      <div class="slider-row">
+        <div class="slider-label"><span class="slider-emoji">${s.emoji}</span><span>${s.label}</span></div>
+        <div class="slider-value"><span id="evol-${s.key}">${vol[s.key]}</span><span class="slider-value-label">×/Wo</span></div>
+      </div>
+      <input type="range" min="0" max="${s.max}" value="${vol[s.key]}" oninput="
+        document.getElementById('evol-${s.key}').textContent=this.value;
+        _updateEvolTotal();
+      ">
+    </div>
+  `).join('');
+  showModal(`
+    <div class="modal-body">
+      ${sliderHTML}
+      <div id="evol-total" style="text-align:center;margin:16px 0;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text-secondary);"></div>
+      <button class="btn btn-primary" onclick="
+        const newVol={...state.user.weeklyVolume};
+        ['kraft','lauf','rad','schwimm'].forEach(k=>{const el=document.getElementById('evol-'+k);if(el)newVol[k]=parseInt(el.textContent)||0;});
+        _saveProfileAndRegenerate({weeklyVolume:newVol},'Volumen gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Trainingsvolumen');
+  setTimeout(_updateEvolTotal, 50);
+}
+
+function _updateEvolTotal() {
+  const u = state.user;
+  let total = 0;
+  u.sports.forEach(k => {
+    const el = document.getElementById('evol-' + k);
+    if (el) total += parseInt(el.textContent) || 0;
+  });
+  const el = document.getElementById('evol-total');
+  if (el) el.textContent = `Total: ${total} Einheiten / Woche`;
+}
+
+function editTrainingDays() {
+  const cur = [...(state.user.trainingDays || [0,1,2,3,4])];
+  const dayNames = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  showModal(`
+    <div class="modal-body">
+      <p style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">An welchen Tagen trainierst du?</p>
+      <div class="training-days-grid" id="etd-grid">
+        ${dayNames.map((label, idx) => `
+          <div class="day-pill ${cur.includes(idx)?'selected':''}" id="etd-${idx}" onclick="document.getElementById('etd-${idx}').classList.toggle('selected')">${label}</div>
+        `).join('')}
+      </div>
+      <button class="btn btn-primary" style="margin-top:20px;" onclick="
+        const sel=[0,1,2,3,4,5,6].filter(i=>document.getElementById('etd-'+i)?.classList.contains('selected'));
+        if(!sel.length){showToast('Mind. 1 Tag wählen');return;}
+        _saveProfileAndRegenerate({trainingDays:sel},'Trainingstage gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Trainingstage');
+}
+
+function editGoal() {
+  const cur = state.user.goal;
+  const opts = [['recomp','🎯','Body Recomposition','Muskeln aufbauen + Fett verlieren'],['race','🏁','Wettkampf','Halbmarathon, Triathlon, Hyrox'],['strength','💪','Kraft & Muskelaufbau','Hauptfokus auf Hypertrophie'],['fitness','✨','Allgemeine Fitness','Stark, fit, gesund']];
+  showModal(`
+    <div class="modal-body">
+      <div class="choices">
+        ${opts.map(([k,icon,title,sub]) => `
+          <div class="choice ${cur===k?'selected':''}" onclick="
+            document.querySelectorAll('#goal-modal .choice').forEach(c=>c.classList.remove('selected'));
+            this.classList.add('selected');
+          ">
+            <div class="choice-icon">${icon}</div>
+            <div class="choice-content"><div class="choice-title">${title}</div><div class="choice-sub">${sub}</div></div>
+            <div class="choice-check"></div>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn btn-primary" style="margin-top:16px;" onclick="
+        const sel=document.querySelector('#modal-overlay .choice.selected');
+        if(!sel)return;
+        const g=['recomp','race','strength','fitness'][[...document.querySelectorAll('#modal-overlay .choice')].indexOf(sel)];
+        _saveProfileAndRegenerate({goal:g},'Ziel gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Ziel');
+}
+
+function editExperience() {
+  const cur = state.user.experience;
+  const opts = [['beginner','🌱','Einsteiger','< 6 Monate Training'],['intermediate','⚡','Fortgeschritten','6 Monate – 3 Jahre'],['advanced','🔥','Erfahren','3+ Jahre / Wettkampf']];
+  showModal(`
+    <div class="modal-body">
+      <div class="choices">
+        ${opts.map(([k,icon,title,sub]) => `
+          <div class="choice ${cur===k?'selected':''}" onclick="
+            document.querySelectorAll('#modal-overlay .choice').forEach(c=>c.classList.remove('selected'));
+            this.classList.add('selected');
+          ">
+            <div class="choice-icon">${icon}</div>
+            <div class="choice-content"><div class="choice-title">${title}</div><div class="choice-sub">${sub}</div></div>
+            <div class="choice-check"></div>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn btn-primary" style="margin-top:16px;" onclick="
+        const sel=document.querySelector('#modal-overlay .choice.selected');
+        if(!sel)return;
+        const e=['beginner','intermediate','advanced'][[...document.querySelectorAll('#modal-overlay .choice')].indexOf(sel)];
+        _saveProfileAndRegenerate({experience:e},'Level gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Level');
+}
+
+function editLocation() {
+  const cur = state.user.location;
+  const opts = [['gym','🏋️','Fitnessstudio','Hanteln, Maschinen, Kabelzug'],['home','🏠','Zuhause / Bodyweight','Kein oder wenig Equipment'],['outdoor','🌳','Outdoor / Calisthenics','Park, Klimmzugstange']];
+  showModal(`
+    <div class="modal-body">
+      <div class="choices">
+        ${opts.map(([k,icon,title,sub]) => `
+          <div class="choice ${cur===k?'selected':''}" onclick="
+            document.querySelectorAll('#modal-overlay .choice').forEach(c=>c.classList.remove('selected'));
+            this.classList.add('selected');
+          ">
+            <div class="choice-icon">${icon}</div>
+            <div class="choice-content"><div class="choice-title">${title}</div><div class="choice-sub">${sub}</div></div>
+            <div class="choice-check"></div>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn btn-primary" style="margin-top:16px;" onclick="
+        const sel=document.querySelector('#modal-overlay .choice.selected');
+        if(!sel)return;
+        const l=['gym','home','outdoor'][[...document.querySelectorAll('#modal-overlay .choice')].indexOf(sel)];
+        _saveProfileAndRegenerate({location:l},'Trainingsort gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Trainingsort');
 }
 
 function regeneratePlan() {
   if (confirm('Plan neu generieren? Deine bestehenden Workout-Logs bleiben erhalten.')) {
-    state.currentPlan = generatePlan(state.user);
+    state.currentPlan = generate4WeekPlan(state.user);
+    state.viewingWeekIndex = findCurrentWeekIndex();
     saveState();
     showToast('Plan neu generiert ✨');
     switchTab('home');
@@ -1770,7 +2145,16 @@ function openRetroLogger() {
 function loadRetroWorkouts(dateStr) {
   const date = new Date(dateStr + 'T12:00:00');
   const dayIdx = getDayIndex(date);
-  const planDay = state.currentPlan[dayIdx];
+  // Find the week containing this date
+  let planDay = null;
+  if (Array.isArray(state.currentPlan)) {
+    const week = state.currentPlan.find(w => {
+      const we = new Date(w.startDate + 'T00:00:00');
+      we.setDate(we.getDate() + 6);
+      return w.startDate <= dateStr && dateStr <= we.toISOString().split('T')[0];
+    });
+    if (week) planDay = week.days[dayIdx];
+  }
   const existingLogs = state.workoutLogs[dateStr] || {};
 
   const container = document.getElementById('retro-workout-list');
@@ -1915,6 +2299,7 @@ function showSettings() {
 (function init() {
   const loaded = loadState();
   if (loaded && state.user && state.currentPlan) {
+    state.viewingWeekIndex = findCurrentWeekIndex();
     document.getElementById('header-section').classList.remove('hidden');
     document.getElementById('bottom-nav').classList.remove('hidden');
     renderHome();
