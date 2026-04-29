@@ -1480,3 +1480,158 @@ input[type="date"] {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* ── Phase Indicator ──────────────────────────────────────────────────── */
+.phase-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+  background: var(--bg-elevated);
+}
+
+.phase-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 4px 10px;
+  border-radius: 20px;
+  color: #000;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.phase-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Phase timeline bar */
+.phase-timeline {
+  display: flex;
+  gap: 3px;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+  height: 28px;
+}
+
+.timeline-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 4px;
+  transition: flex 0.2s;
+}
+
+.timeline-seg.active {
+  flex: 2;
+}
+
+.timeline-seg-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px;
+}
+
+/* ── Race Setup (onboarding + modal) ─────────────────────────────────── */
+.race-section-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.race-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.race-type-option {
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+  user-select: none;
+}
+
+.race-type-option.selected {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.race-type-option:hover {
+  border-color: var(--border-bright);
+}
+
+/* Time input row (hh:mm:ss) */
+.time-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.time-input {
+  flex: 1;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px;
+  color: var(--text-primary);
+  outline: none;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.time-input::-webkit-inner-spin-button,
+.time-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+.time-input:focus { border-color: var(--accent); }
+
+.time-sep {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Race card in profile */
+.race-card {
+  background: var(--bg-elevated);
+}
+
+/* Brick workout colour (uses rad colour class) */
+.workout-card.brick {
+  border-left-color: #9b59b6;
+}
+
+.workout-type.brick {
+  background: #9b59b625;
+  color: #9b59b6;
+}

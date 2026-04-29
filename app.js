@@ -4,21 +4,93 @@
 const CONFIG = {
   // Workout-Dauer in Minuten
   WORKOUT_DURATIONS: {
-    KRAFT_BASE: 45,           // Basis-Dauer Krafttraining
-    KRAFT_ADVANCED_BONUS: 15, // Extra Min für Advanced User
-    LAUF_LONG: 90,            // Long Run
-    LAUF_INTERVAL: 60,        // Intervall-Training
-    LAUF_Z2: 45,              // Z2 Grundlagen-Lauf
-    LAUF_TEMPO: 50,           // Tempo-Lauf
-    RAD_Z2: 60,               // Lockerer Rad
-    RAD_LONG: 90,             // Long Ride
-    SCHWIMMEN: 45             // Schwimm-Einheit
+    KRAFT_BASE: 45,
+    KRAFT_ADVANCED_BONUS: 15,
+    // Lauf
+    EASY_RUN: 45,
+    LONG_RUN_BASE: 75,
+    TEMPO_RUN: 55,
+    INTERVAL_SHORT: 50,
+    INTERVAL_LONG: 60,
+    FARTLEK: 40,
+    PROGRESSION_RUN: 55,
+    HILL_REPEATS: 50,
+    RACE_PACE_RUN: 50,
+    // Rad
+    RAD_Z2: 70,
+    RAD_SWEET_SPOT: 75,
+    RAD_THRESHOLD: 65,
+    RAD_VO2MAX: 60,
+    RAD_RECOVERY: 40,
+    RAD_LONG: 110,
+    // Sonstiges
+    SCHWIMMEN: 45,
+    BRICK: 95,
+    // Legacy (für Kompatibilität mit alten Logs)
+    LAUF_LONG: 90,
+    LAUF_INTERVAL: 60,
+    LAUF_Z2: 45,
+    LAUF_TEMPO: 50
+  },
+
+  // Phasen-Schwellenwerte (Wochen bis Race)
+  PHASE_THRESHOLDS: {
+    BUILD: 12,   // <= 12 Wochen → Build
+    PEAK: 6,     // <= 6 Wochen → Peak
+    TAPER: 2     // <= 2 Wochen → Taper
+  },
+
+  // Phasen-Labels für UI
+  PHASE_UI: {
+    base:      { label: 'BASE',      desc: 'Grundlagen aufbauen',     color: '#4a9eff' },
+    build:     { label: 'BUILD',     desc: 'Tempo & Intervalle',      color: '#f5a623' },
+    peak:      { label: 'PEAK',      desc: 'Race-spezifisch',         color: '#e84545' },
+    taper:     { label: 'TAPER',     desc: 'Schärfen & Erholen',      color: '#9b59b6' },
+    post_race: { label: 'POST RACE', desc: 'Erholung & neues Ziel',   color: '#27ae60' }
+  },
+
+  // Pace-Offsets in Sek/km relativ zur Ziel-Race-Pace
+  PACE_OFFSETS: {
+    EASY:          75,
+    MARATHON:      37,
+    HALF_MARATHON: 20,
+    TEMPO:         10,
+    TEN_K:         -5,
+    FIVE_K:        -12,
+    INTERVAL_1K:   -20,
+    INTERVAL_400:  -35
+  },
+
+  // Standard-Paces (Sek/km) wenn kein PB vorhanden
+  DEFAULT_EASY_PACE_SEC: {
+    beginner:     390,  // 6:30/km
+    intermediate: 330,  // 5:30/km
+    advanced:     300   // 5:00/km
+  },
+
+  // Standard Long-Run Dauern (Sek/km) für Phase-Progression
+  LONG_RUN_DURATIONS_BY_PHASE: {
+    base:  [75,  80,  85,  90 ],
+    build: [90,  100, 110, 120],
+    peak:  [120, 130, 140, 150],
+    taper: [70,  60,  50,  50 ]
+  },
+
+  // Legacy für Backward-Kompatibilität
+  LONG_RUN_DURATIONS: [75, 90, 90, 100],
+
+  // Triathlon-Empfehlungs-Volumen pro Typ
+  TRIATHLON_VOLUMES: {
+    sprint_tri:  { schwimm: 2, rad: 2, lauf: 3, kraft: 2 },
+    olympic_tri: { schwimm: 2, rad: 3, lauf: 3, kraft: 2 },
+    half_tri:    { schwimm: 2, rad: 3, lauf: 3, kraft: 1 },
+    full_tri:    { schwimm: 3, rad: 4, lauf: 4, kraft: 1 }
   },
 
   // Trainings-Empfehlungen
   RECOMMENDED_LIMITS: {
-    MAX_WEEKLY_UNITS: 7,                     // Warnung bei mehr als X
-    MIN_REST_HOURS_LEGS_TO_INTERVAL: 24      // Pause Legs → Intervall (Doku — Plan-Generator hält Regel implizit ein)
+    MAX_WEEKLY_UNITS: 7,
+    MIN_REST_HOURS_LEGS_TO_INTERVAL: 24
   },
 
   // Standardwerte beim Onboarding
@@ -30,10 +102,10 @@ const CONFIG = {
   },
 
   // Plan-Generator Verhalten
-  STREAK_LOOKBACK_DAYS: 30,   // Wie weit zurück Streak prüfen
-  PLAN_GEN_DELAY_MS: 1800,    // Loading-Animation beim Plan generieren
-  PLAN_WEEKS: 4,              // Anzahl Wochen im Mehrwochenplan
-  LONG_RUN_DURATIONS: [75, 90, 90, 100] // Long-Run-Dauer je Woche (Progression)
+  STREAK_LOOKBACK_DAYS: 30,
+  PLAN_GEN_DELAY_MS: 1800,
+  PLAN_WEEKS: 4,
+  MAX_PLAN_WEEKS: 24  // Max. Wochen die JIT generiert werden
 };
 
 // === STATE & PERSISTENCE ===
@@ -123,6 +195,8 @@ function loadState() {
 
     // Ensure trainingDays exists on loaded user
     if (state.user && !state.user.trainingDays) state.user.trainingDays = [0, 1, 2, 3, 4];
+    // race field defaults to null for existing users without race setup
+    if (state.user && !('race' in state.user)) state.user.race = null;
 
     state.viewingWeekIndex = findCurrentWeekIndex();
     return true;
@@ -133,15 +207,155 @@ function loadState() {
   }
 }
 
+// === TRAINING INTELLIGENCE UTILITIES ===
+
+// Returns weekOffset-adjusted weeks-until-race (0 = race this week, negative = past)
+function getWeeksUntilRace(data, weekOffset) {
+  const race = data.race;
+  if (!race || !race.date) return null;
+  const raceDate = new Date(race.date + 'T00:00:00');
+  const today = new Date();
+  const planWeekStart = new Date(getMondayOfWeek(today));
+  planWeekStart.setDate(planWeekStart.getDate() + (weekOffset || 0) * 7);
+  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+  return Math.ceil((raceDate - planWeekStart) / msPerWeek);
+}
+
+// Returns training phase string for given week
+function getTrainingPhase(data, weekOffset) {
+  const weeks = getWeeksUntilRace(data, weekOffset || 0);
+  if (weeks === null) {
+    // No race: phase by goal
+    const goal = data.goal || 'fitness';
+    if (goal === 'race') return 'build';
+    if (goal === 'strength') return 'build';
+    return 'base';
+  }
+  if (weeks < 0) return 'post_race';
+  if (weeks <= CONFIG.PHASE_THRESHOLDS.TAPER) return 'taper';
+  if (weeks <= CONFIG.PHASE_THRESHOLDS.PEAK)  return 'peak';
+  if (weeks <= CONFIG.PHASE_THRESHOLDS.BUILD) return 'build';
+  return 'base';
+}
+
+// Converts h/m/s object to total seconds
+function hmsToSeconds(hms) {
+  if (!hms) return null;
+  return (hms.hours || 0) * 3600 + (hms.minutes || 0) * 60 + (hms.seconds || 0);
+}
+
+// Formats seconds-per-km as "M:SS/km"
+function formatPace(secPerKm) {
+  if (!secPerKm || secPerKm <= 0) return null;
+  const m = Math.floor(secPerKm / 60);
+  const s = Math.round(secPerKm % 60);
+  return `${m}:${String(s).padStart(2, '0')}/km`;
+}
+
+// Distance in km for a race type (single-sport)
+function getRaceDistanceKm(raceType) {
+  const map = { '5k': 5, '10k': 10, 'half_marathon': 21.1, 'marathon': 42.2 };
+  return map[raceType] || null;
+}
+
+// Derives a full set of training paces from user data
+function calculatePaces(data) {
+  const exp = data.experience || 'intermediate';
+  const race = data.race;
+
+  // Baseline easy pace (sec/km)
+  let easyPaceSec = CONFIG.DEFAULT_EASY_PACE_SEC[exp] || 330;
+  let racePaceSec = null;
+
+  // Try to derive from goalTime → race distance
+  if (race && race.goalTime && race.type) {
+    const distKm = getRaceDistanceKm(race.type);
+    const totalSec = hmsToSeconds(race.goalTime);
+    if (distKm && totalSec) {
+      racePaceSec = totalSec / distKm;
+      easyPaceSec = racePaceSec + CONFIG.PACE_OFFSETS.EASY;
+    }
+  } else if (race && race.currentPB && race.type) {
+    const distKm = getRaceDistanceKm(race.type);
+    const totalSec = hmsToSeconds(race.currentPB);
+    if (distKm && totalSec) {
+      racePaceSec = totalSec / distKm;
+      easyPaceSec = racePaceSec + CONFIG.PACE_OFFSETS.EASY;
+    }
+  }
+
+  // Build full pace table
+  const base = racePaceSec || (easyPaceSec - CONFIG.PACE_OFFSETS.EASY);
+  return {
+    easy:         Math.round(easyPaceSec),
+    marathon:     Math.round(base + CONFIG.PACE_OFFSETS.MARATHON),
+    halfMarathon: Math.round(base + CONFIG.PACE_OFFSETS.HALF_MARATHON),
+    tempo:        Math.round(base + CONFIG.PACE_OFFSETS.TEMPO),
+    tenK:         Math.round(base + CONFIG.PACE_OFFSETS.TEN_K),
+    fiveK:        Math.round(base + CONFIG.PACE_OFFSETS.FIVE_K),
+    interval1k:   Math.round(base + CONFIG.PACE_OFFSETS.INTERVAL_1K),
+    interval400:  Math.round(base + CONFIG.PACE_OFFSETS.INTERVAL_400)
+  };
+}
+
+// Returns the Long Run duration in minutes for current phase + week index within phase
+function getLongRunDuration(phase, weekIdx) {
+  const table = CONFIG.LONG_RUN_DURATIONS_BY_PHASE[phase] || CONFIG.LONG_RUN_DURATIONS_BY_PHASE.base;
+  return table[weekIdx % table.length];
+}
+
+// Select lauf workout types for the week based on phase + total runs
+function selectLaufTypes(phase, nLauf, isRaceGoal, raceType) {
+  const isTri = raceType && raceType.includes('tri');
+  switch (phase) {
+    case 'taper':
+      return (['long_run', 'race_pace', 'easy_run', 'easy_run']).slice(0, nLauf);
+    case 'peak':
+      if (nLauf === 1) return ['long_run'];
+      if (nLauf === 2) return ['long_run', 'race_pace'];
+      if (nLauf === 3) return ['long_run', 'race_pace', 'interval_short'];
+      return (['long_run', 'race_pace', 'interval_short', 'easy_run']).slice(0, nLauf);
+    case 'build':
+      if (nLauf === 1) return ['long_run'];
+      if (nLauf === 2) return ['long_run', 'tempo_run'];
+      if (nLauf === 3) return ['long_run', 'tempo_run', 'interval_long'];
+      return (['long_run', 'tempo_run', 'interval_long', 'easy_run']).slice(0, nLauf);
+    default: // base
+      if (nLauf === 1) return ['long_run'];
+      if (nLauf === 2) return ['long_run', 'easy_run'];
+      if (nLauf === 3) return isTri ? ['long_run', 'easy_run', 'easy_run'] : ['long_run', 'easy_run', 'fartlek'];
+      return (['long_run', 'easy_run', 'easy_run', 'fartlek']).slice(0, nLauf);
+  }
+}
+
+// Select rad workout types for the week based on phase
+function selectRadTypes(phase, nRad) {
+  switch (phase) {
+    case 'taper':
+      return (['recovery_ride', 'z2_endurance', 'z2_endurance']).slice(0, nRad);
+    case 'peak':
+      if (nRad === 1) return ['z2_endurance'];
+      if (nRad === 2) return ['z2_endurance', 'threshold'];
+      return (['z2_endurance', 'threshold', 'vo2max']).slice(0, nRad);
+    case 'build':
+      if (nRad === 1) return ['z2_endurance'];
+      if (nRad === 2) return ['z2_endurance', 'sweet_spot'];
+      return (['z2_endurance', 'sweet_spot', 'threshold']).slice(0, nRad);
+    default: // base
+      return (['z2_endurance', 'z2_endurance', 'long_ride']).slice(0, nRad);
+  }
+}
+
 // === PLAN GENERATOR ===
 
 const SPORT_INFO = {
-  kraft: { icon: '💪', label: 'Kraft', color: 'kraft' },
-  lauf: { icon: '🏃', label: 'Laufen', color: 'lauf' },
-  rad: { icon: '🚴', label: 'Rad', color: 'rad' },
-  schwimm: { icon: '🏊', label: 'Schwimmen', color: 'schwimm' },
-  mobility: { icon: '🧘', label: 'Mobility', color: 'mobility' },
-  rest: { icon: '😴', label: 'Pause', color: 'rest' }
+  kraft:  { icon: '💪', label: 'Kraft',     color: 'kraft' },
+  lauf:   { icon: '🏃', label: 'Laufen',    color: 'lauf' },
+  rad:    { icon: '🚴', label: 'Rad',       color: 'rad' },
+  schwimm:{ icon: '🏊', label: 'Schwimmen', color: 'schwimm' },
+  brick:  { icon: '🧱', label: 'Brick',     color: 'rad' },
+  mobility:{ icon: '🧘', label: 'Mobility', color: 'mobility' },
+  rest:   { icon: '😴', label: 'Pause',     color: 'rest' }
 };
 
 const EXERCISE_LIBRARY = {
@@ -214,19 +428,36 @@ function generatePlan(data) {
   const plan = {};
   dayNames.forEach((d, i) => { plan[i] = { day: d, workouts: [] }; });
 
-  // Allowed training days; Mon=0 … Sun=6
   const tDays = (data.trainingDays && data.trainingDays.length > 0)
     ? [...data.trainingDays].sort((a, b) => a - b)
     : [0, 1, 2, 3, 4, 5, 6];
 
   const hasSport = s => !data.sports || data.sports.includes(s);
-  const nKraft   = hasSport('kraft')  ? (data.weeklyVolume.kraft  || 0) : 0;
-  const nLauf    = hasSport('lauf')   ? (data.weeklyVolume.lauf   || 0) : 0;
-  const nRad     = hasSport('rad')    ? (data.weeklyVolume.rad    || 0) : 0;
-  const nSchwimm = hasSport('schwimm')? (data.weeklyVolume.schwimm || 0) : 0;
-  const weekIdx = data._weekIndex || 0;
+  const weekIdx  = data._weekIndex || 0;
+  const phase    = getTrainingPhase(data, weekIdx);
+  const isRaceGoal = data.goal === 'race';
+  const raceType = data.race?.type || null;
+  const isTri    = raceType && raceType.includes('tri');
 
-  // Pick n evenly-spread indices from tDays, honouring exclusions
+  // Taper: reduce volumes
+  const taperFactor = phase === 'taper'
+    ? (weekIdx % 2 === 0 ? 0.7 : 0.5)  // week 1: -30%, week 2: -50%
+    : 1.0;
+
+  function tapered(n) { return Math.max(phase === 'taper' ? 1 : 0, Math.round(n * taperFactor)); }
+
+  let nKraft   = hasSport('kraft')  ? tapered(data.weeklyVolume.kraft  || 0) : 0;
+  let nLauf    = hasSport('lauf')   ? tapered(data.weeklyVolume.lauf   || 0) : 0;
+  let nRad     = hasSport('rad')    ? tapered(data.weeklyVolume.rad    || 0) : 0;
+  let nSchwimm = hasSport('schwimm')? tapered(data.weeklyVolume.schwimm|| 0) : 0;
+
+  // Taper: cap kraft at 1
+  if (phase === 'taper') nKraft = Math.min(nKraft, 1);
+
+  // Peak: cap kraft at 2 (recovery focus)
+  if (phase === 'peak') nKraft = Math.min(nKraft, 2);
+
+  // Pick n evenly-spread days from tDays
   function pickSpread(n, exclude = []) {
     const pool = tDays.filter(d => !exclude.includes(d));
     if (!pool.length || n <= 0) return [];
@@ -236,7 +467,6 @@ function generatePlan(data) {
       const d = pool[Math.min(Math.round(i * step), pool.length - 1)];
       if (!result.includes(d)) result.push(d);
     }
-    // Fill any missing slots
     for (const d of pool) {
       if (result.length >= n) break;
       if (!result.includes(d)) result.push(d);
@@ -263,104 +493,151 @@ function generatePlan(data) {
       duration: CONFIG.WORKOUT_DURATIONS.KRAFT_BASE + (data.experience === 'advanced' ? CONFIG.WORKOUT_DURATIONS.KRAFT_ADVANCED_BONUS : 0),
       time: 'Abend',
       exercises: exercises.map((e, idx) => ({ id: `ex-${dayIdx}-${idx}`, ...e })),
-      isLegs: split === 'legs' || split === 'full'
+      isLegs: split === 'legs' || split === 'full',
+      isHard: false
     });
   });
 
   const legsDays = kraftDays.filter((_, i) => splits[i] === 'legs' || splits[i] === 'full');
   const freeDays = tDays.filter(d => !kraftDays.includes(d));
 
+  // Helper: is the day directly after a hard workout?
+  function isAfterHard(d) {
+    const prev = d - 1;
+    return plan[prev]?.workouts.some(w => w.isHard || w.isLegs);
+  }
+
+  // Helper: next free day without lauf, optionally excluding hard-day-after
+  function nextFreeDay(exclude = [], noHardAfter = false) {
+    return freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf' || w.type === 'brick')
+        && !exclude.includes(d)
+        && !(noHardAfter && isAfterHard(d)))
+      ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf' || w.type === 'brick') && !exclude.includes(d));
+  }
+
   // ── LAUF ─────────────────────────────────────────────────────────────
   if (nLauf > 0) {
-    const laufTypes = ['long', 'intervall', 'z2', 'tempo'].slice(0, nLauf);
-    const longDuration = CONFIG.LONG_RUN_DURATIONS[weekIdx] || CONFIG.WORKOUT_DURATIONS.LAUF_LONG;
+    const laufTypes = selectLaufTypes(phase, nLauf, isRaceGoal, raceType);
+    const longDuration = getLongRunDuration(phase, weekIdx);
+    const usedLaufDays = [];
 
-    // Long Run: last free training day whose previous training day has no legs
-    if (laufTypes.includes('long')) {
+    // Long Run: prefer last free training day, guard against legs-day-before
+    if (laufTypes.includes('long_run') || laufTypes.includes('long')) {
       const revFree = [...freeDays].reverse();
       let longDay = revFree.find(d => {
         const prevT = tDays[tDays.indexOf(d) - 1];
-        return prevT === undefined || !legsDays.includes(prevT);
+        return (prevT === undefined || !legsDays.includes(prevT)) && !usedLaufDays.includes(d);
       });
       if (longDay === undefined) longDay = revFree[0] ?? tDays[tDays.length - 1];
-      const w = createLaufWorkout('long', longDay, data);
+      const w = createLaufWorkout('long_run', longDay, data);
       w.duration = longDuration;
       plan[longDay].workouts.push(w);
+      usedLaufDays.push(longDay);
+      // Mark day after long run as "no hard" by tagging rest
+      const afterLong = longDay + 1;
+      if (plan[afterLong] && !tDays.includes(afterLong)) {
+        plan[afterLong]._afterLongRun = true;
+      }
     }
 
-    // Intervall: free day not directly after a legs day
-    if (laufTypes.includes('intervall')) {
-      const notAfterLegs = freeDays.filter(d => {
-        const prev = d - 1;
-        return !legsDays.includes(prev) && !plan[d].workouts.some(w => w.type === 'lauf');
-      });
-      const day = notAfterLegs[0]
-        ?? freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'))
-        ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'));
-      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('intervall', day, data));
-    }
+    // Hard workout types: intervall, tempo, race_pace → go on non-legs, non-afterHard days
+    const hardTypes = laufTypes.filter(t => ['interval_short','interval_long','tempo_run','race_pace','hill_repeats'].includes(t));
+    hardTypes.forEach(type => {
+      const day = freeDays.find(d =>
+        !usedLaufDays.includes(d) &&
+        !plan[d].workouts.some(w => w.type === 'lauf') &&
+        !isAfterHard(d) &&
+        !legsDays.includes(d - 1)
+      ) ?? nextFreeDay(usedLaufDays, false);
+      if (day !== undefined) {
+        plan[day].workouts.push(createLaufWorkout(type, day, data));
+        usedLaufDays.push(day);
+      }
+    });
 
-    // Z2: free day preferred; smart-pair with non-legs kraft day if no free day left
-    if (laufTypes.includes('z2')) {
-      const freeForZ2 = freeDays.filter(d => !plan[d].workouts.some(w => w.type === 'lauf'));
-      let day = freeForZ2[0];
+    // Easy types: easy_run, fartlek, progression_run → remaining free days or smart-pair
+    const easyTypes = laufTypes.filter(t => ['easy_run','fartlek','progression_run','z2'].includes(t));
+    easyTypes.forEach(type => {
+      let day = freeDays.find(d => !usedLaufDays.includes(d) && !plan[d].workouts.some(w => w.type === 'lauf'));
       if (day === undefined) {
-        // Smart-pair: Z2 is low-intensity, safe to add after a non-legs kraft session
+        // Smart-pair with non-legs kraft day
         day = kraftDays.find(d => !legsDays.includes(d) && !plan[d].workouts.some(w => w.type === 'lauf'));
       }
-      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('z2', day, data));
-    }
+      if (day !== undefined) {
+        plan[day].workouts.push(createLaufWorkout(type === 'z2' ? 'easy_run' : type, day, data));
+        usedLaufDays.push(day);
+      }
+    });
+  }
 
-    // Tempo: next available free day
-    if (laufTypes.includes('tempo')) {
-      const day = freeDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'))
-        ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'lauf'));
-      if (day !== undefined) plan[day].workouts.push(createLaufWorkout('tempo', day, data));
+  // ── BRICK (Triathlon only, BUILD/PEAK) ────────────────────────────────
+  if (isTri && nRad > 0 && nLauf > 0 && ['build', 'peak'].includes(phase)) {
+    // Place one brick on a weekend day if available, else last free day
+    const brickDay = [5, 6].find(d => tDays.includes(d) && !plan[d].workouts.some(w => w.type === 'brick'))
+      ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'brick'));
+    if (brickDay !== undefined && !plan[brickDay].workouts.some(w => w.type === 'brick')) {
+      plan[brickDay].workouts.push(createBrickWorkout(brickDay, data, phase));
+      // A brick replaces one rad and one lauf unit
+      nRad   = Math.max(0, nRad   - 1);
+      nLauf  = Math.max(0, nLauf  - 1);
     }
   }
 
   // ── RAD ──────────────────────────────────────────────────────────────
   if (nRad > 0) {
-    const radTypes = ['z2', 'tempo', 'long'].slice(0, nRad);
+    const radTypes = selectRadTypes(phase, nRad);
     radTypes.forEach(type => {
-      const freeForRad = tDays.filter(d => !plan[d].workouts.some(w => w.type === 'rad' || w.type === 'lauf'));
-      let day = freeForRad.find(d => !kraftDays.includes(d));
+      const freeForRad = tDays.filter(d =>
+        !plan[d].workouts.some(w => w.type === 'rad' || w.type === 'brick') &&
+        !plan[d].workouts.some(w => w.type === 'lauf')
+      );
+      // Hard rad types: don't place after hard day
+      const needsRest = ['sweet_spot', 'threshold', 'vo2max'].includes(type);
+      let day = freeForRad.find(d => !kraftDays.includes(d) && !(needsRest && isAfterHard(d)));
       if (day === undefined) {
-        // Smart-pair: Z2/Tempo rad after non-legs kraft
         day = kraftDays.find(d => !legsDays.includes(d) && !plan[d].workouts.some(w => w.type === 'rad'));
       }
       if (day === undefined) day = freeForRad[0] ?? tDays.find(d => !plan[d].workouts.some(w => w.type === 'rad'));
       if (day === undefined) return;
       const isCombined = plan[day].workouts.some(w => w.type === 'kraft');
-      plan[day].workouts.push({
-        id: `rad-${day}`,
-        type: 'rad',
-        title: type === 'z2' ? 'Rad — Z2 Grundlage' : type === 'tempo' ? 'Rad — Tempo' : 'Rad — Long',
-        duration: type === 'long' ? CONFIG.WORKOUT_DURATIONS.RAD_LONG : CONFIG.WORKOUT_DURATIONS.RAD_Z2,
-        time: isCombined ? 'Nach Kraft' : 'Morgen',
-        details: type === 'z2' ? 'HF-Zone 2, locker' : type === 'tempo' ? 'Sweet Spot 88-93% FTP' : 'Lockerer Long Ride',
-        exercises: []
-      });
+      const workout = createRadWorkout(type, day, data);
+      if (isCombined) workout.time = 'Nach Kraft';
+      plan[day].workouts.push(workout);
     });
   }
 
   // ── SCHWIMM ───────────────────────────────────────────────────────────
   if (nSchwimm > 0) {
+    const schwimmTypes = nSchwimm >= 3 ? ['technik', 'ausdauer', 'strecke'] : nSchwimm === 2 ? ['technik', 'ausdauer'] : ['technik'];
     for (let i = 0; i < nSchwimm; i++) {
       const freeForSchwimm = tDays.filter(d => !plan[d].workouts.some(w => w.type === 'schwimm'));
-      const day = freeForSchwimm.find(d => !kraftDays.includes(d))
-        ?? freeForSchwimm[0]
-        ?? tDays[i % tDays.length];
+      // Schwimm not on same day as hard run
+      const day = freeForSchwimm.find(d =>
+        !kraftDays.includes(d) && !plan[d].workouts.some(w => w.isHard)
+      ) ?? freeForSchwimm[0] ?? tDays[i % tDays.length];
+      const sType = schwimmTypes[i] || 'technik';
       plan[day].workouts.push({
         id: `schwimm-${day}`,
         type: 'schwimm',
-        title: 'Schwimmen — Technik & Ausdauer',
-        duration: CONFIG.WORKOUT_DURATIONS.SCHWIMMEN,
+        title: sType === 'strecke' ? 'Schwimmen — Long Swim' : sType === 'ausdauer' ? 'Schwimmen — Ausdauer' : 'Schwimmen — Technik',
+        duration: CONFIG.WORKOUT_DURATIONS.SCHWIMMEN + (sType === 'strecke' ? 15 : sType === 'ausdauer' ? 5 : 0),
         time: 'Morgen',
-        details: i === 0 ? '8x100m + Technik' : '2000m Long Swim',
-        exercises: []
+        details: sType === 'strecke' ? '2000m Freistil — gleichmässiges Tempo' : sType === 'ausdauer' ? '10×100m + 400m Lagen' : '8×100m + Drilltechnik',
+        exercises: [],
+        isHard: false
       });
     }
+  }
+
+  // ── HARD/EASY ROTATION POST-CHECK ─────────────────────────────────────
+  // Ensure no 3 consecutive hard days (check and flag only — plan stays intact)
+  let hardStreak = 0;
+  for (let d = 0; d < 7; d++) {
+    const hasHard = plan[d].workouts.some(w => w.isHard || w.isLegs);
+    if (hasHard) hardStreak++;
+    else hardStreak = 0;
+    plan[d]._hasHard = hasHard;
+    plan[d]._hardStreak = hardStreak;
   }
 
   return plan;
@@ -380,36 +657,73 @@ function generate4WeekPlan(data) {
 }
 
 function createLaufWorkout(type, dayIdx, data) {
-  const workouts = {
-    long: {
-      title: 'Long Run',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_LONG,
-      details: 'Lockeres Tempo, HF-Zone 2',
-      time: 'Morgen'
-    },
-    intervall: {
-      title: 'Intervall — Speed',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_INTERVAL,
-      details: '6×1km @ Renntempo / 90s Pause',
-      time: 'Morgen'
-    },
-    z2: {
-      title: 'Z2 — Grundlage',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_Z2,
-      details: 'Locker, Konversationstempo',
-      time: 'Morgen'
-    },
-    tempo: {
-      title: 'Tempo — Schwellentempo',
-      duration: CONFIG.WORKOUT_DURATIONS.LAUF_TEMPO,
-      details: '20-30 Min Tempolauf',
-      time: 'Morgen'
-    }
+  const paces = data ? calculatePaces(data) : null;
+  const p = (key) => paces ? (formatPace(paces[key]) || '') : '';
+
+  const defs = {
+    // Legacy keys (backward compat)
+    long:      { title: 'Long Run', duration: CONFIG.WORKOUT_DURATIONS.EASY_RUN * 2, details: 'Lockeres Tempo, HF-Zone 2', time: 'Morgen' },
+    intervall: { title: 'Intervall — Speed', duration: CONFIG.WORKOUT_DURATIONS.INTERVAL_LONG, details: `6×1km${p('interval1k') ? ' @ '+p('interval1k') : ''} / 90s Pause`, time: 'Morgen' },
+    z2:        { title: 'Z2 — Grundlage', duration: CONFIG.WORKOUT_DURATIONS.EASY_RUN, details: `Locker${p('easy') ? ', Ziel: '+p('easy') : ', Konversationstempo'}`, time: 'Morgen' },
+    tempo:     { title: 'Tempo — Schwellentempo', duration: CONFIG.WORKOUT_DURATIONS.TEMPO_RUN, details: `20-30 Min Tempolauf${p('tempo') ? ' @ '+p('tempo') : ''}`, time: 'Morgen' },
+    // New types
+    easy_run:  { title: 'Easy Run', duration: CONFIG.WORKOUT_DURATIONS.EASY_RUN, details: `Locker, konversationsfähig${p('easy') ? ' · Ziel: '+p('easy') : ''}`, time: 'Morgen' },
+    long_run:  { title: 'Long Run', duration: CONFIG.WORKOUT_DURATIONS.LAUF_LONG, details: `HF-Zone 2, locker${p('easy') ? ' · '+p('easy') : ''}`, time: 'Morgen' },
+    tempo_run: { title: 'Tempo Run', duration: CONFIG.WORKOUT_DURATIONS.TEMPO_RUN, details: `30 Min Schwellentempo${p('tempo') ? ' @ '+p('tempo') : ''} · incl. Warm-up/Cool-down`, time: 'Morgen' },
+    interval_short: { title: 'Intervall — Kurz', duration: CONFIG.WORKOUT_DURATIONS.INTERVAL_SHORT, details: `8×400m${p('interval400') ? ' @ '+p('interval400') : ''} / 90s Pause`, time: 'Morgen' },
+    interval_long:  { title: 'Intervall — Lang', duration: CONFIG.WORKOUT_DURATIONS.INTERVAL_LONG, details: `5×1000m${p('interval1k') ? ' @ '+p('interval1k') : ''} / 2 Min Pause`, time: 'Morgen' },
+    fartlek:    { title: 'Fartlek', duration: CONFIG.WORKOUT_DURATIONS.FARTLEK, details: '5 min easy, 1 min hart, wiederholen · spielerisch', time: 'Morgen' },
+    progression_run: { title: 'Progression Run', duration: CONFIG.WORKOUT_DURATIONS.PROGRESSION_RUN, details: `1/3 Easy${p('easy') ? ' ('+p('easy')+')' : ''}, 1/3 Marathon-Pace${p('marathon') ? ' ('+p('marathon')+')' : ''}, 1/3 Halb-Pace${p('halfMarathon') ? ' ('+p('halfMarathon')+')' : ''}`, time: 'Morgen' },
+    hill_repeats: { title: 'Hill Repeats', duration: CONFIG.WORKOUT_DURATIONS.HILL_REPEATS, details: '8×90s Berg-Sprints, 2 Min Pause · Kraft + Pace', time: 'Morgen' },
+    race_pace:  { title: 'Race Pace Run', duration: CONFIG.WORKOUT_DURATIONS.RACE_PACE_RUN, details: `30 Min @ Race-Pace${p('halfMarathon') ? ' ('+p('halfMarathon')+')' : ''} · mentale Race-Vorbereitung`, time: 'Morgen' }
   };
+  const def = defs[type] || defs.easy_run;
   return {
     id: `lauf-${type}-${dayIdx}`,
     type: 'lauf',
-    ...workouts[type],
+    workoutSubtype: type,
+    isHard: ['intervall', 'tempo', 'tempo_run', 'interval_short', 'interval_long', 'hill_repeats', 'race_pace'].includes(type),
+    ...def,
+    exercises: []
+  };
+}
+
+function createRadWorkout(type, dayIdx, data) {
+  const defs = {
+    z2_endurance: { title: 'Rad — Z2 Grundlage', duration: CONFIG.WORKOUT_DURATIONS.RAD_Z2, details: 'HF-Zone 2, locker · Aerobe Basis', time: 'Morgen' },
+    sweet_spot:   { title: 'Rad — Sweet Spot', duration: CONFIG.WORKOUT_DURATIONS.RAD_SWEET_SPOT, details: '3×15 Min @ 88-93% FTP / 5 Min Pause', time: 'Morgen' },
+    threshold:    { title: 'Rad — Threshold', duration: CONFIG.WORKOUT_DURATIONS.RAD_THRESHOLD, details: '3×10 Min @ 95-105% FTP / 5 Min Pause', time: 'Morgen' },
+    vo2max:       { title: 'Rad — VO2max', duration: CONFIG.WORKOUT_DURATIONS.RAD_VO2MAX, details: '6×4 Min @ ~115% FTP / 4 Min Pause · maximale Sauerstoffaufnahme', time: 'Morgen' },
+    recovery_ride:{ title: 'Rad — Recovery', duration: CONFIG.WORKOUT_DURATIONS.RAD_RECOVERY, details: 'Zone 1, sehr locker · Beine ausschütteln', time: 'Morgen' },
+    long_ride:    { title: 'Rad — Long Ride', duration: CONFIG.WORKOUT_DURATIONS.RAD_LONG, details: 'Z2 Ausdauer · letztes 30 Min etwas Tempo', time: 'Morgen' },
+    // Legacy
+    z2:    { title: 'Rad — Z2 Grundlage', duration: CONFIG.WORKOUT_DURATIONS.RAD_Z2, details: 'HF-Zone 2, locker', time: 'Morgen' },
+    tempo: { title: 'Rad — Tempo', duration: CONFIG.WORKOUT_DURATIONS.RAD_Z2, details: 'Sweet Spot 88-93% FTP', time: 'Morgen' },
+    long:  { title: 'Rad — Long', duration: CONFIG.WORKOUT_DURATIONS.RAD_LONG, details: 'Lockerer Long Ride', time: 'Morgen' }
+  };
+  const def = defs[type] || defs.z2_endurance;
+  return {
+    id: `rad-${type}-${dayIdx}`,
+    type: 'rad',
+    workoutSubtype: type,
+    isHard: ['sweet_spot', 'threshold', 'vo2max'].includes(type),
+    ...def,
+    exercises: []
+  };
+}
+
+function createBrickWorkout(dayIdx, data, phase) {
+  const bikeDur = phase === 'peak' ? 75 : phase === 'build' ? 60 : 45;
+  const runDur  = phase === 'peak' ? 25 : phase === 'build' ? 20 : 15;
+  return {
+    id: `brick-${dayIdx}`,
+    type: 'brick',
+    workoutSubtype: 'brick',
+    isHard: false,
+    title: 'Brick — Rad + Lauf',
+    duration: bikeDur + runDur,
+    details: `${bikeDur} Min Rad + ${runDur} Min Lauf direkt danach · Wettkampf-Simulation`,
+    time: 'Morgen',
     exercises: []
   };
 }
@@ -422,12 +736,19 @@ const ONBOARDING_STEPS = [
   'location',
   'experience',
   'goal',
+  'race_setup',   // only shown when goal === 'race'
   'volume',
   'trainingdays',
   'name',
   'generating',
   'complete'
 ];
+
+// Steps that are conditionally skipped
+function shouldSkipStep(step) {
+  if (step === 'race_setup' && state.onboardingData.goal !== 'race') return true;
+  return false;
+}
 
 function renderOnboarding() {
   const step = ONBOARDING_STEPS[state.onboardingStep];
@@ -633,6 +954,81 @@ function renderOnboarding() {
     `;
   }
   
+  else if (step === 'race_setup') {
+    const rd = state.onboardingData.raceData || {};
+    const today = new Date();
+    const minDate = new Date(today); minDate.setDate(today.getDate() + 14);
+    const maxDate = new Date(today); maxDate.setFullYear(today.getFullYear() + 2);
+    const fmt = d => d.toISOString().split('T')[0];
+    const sports = state.onboardingData.sports;
+    const hasLauf = sports.includes('lauf');
+    const hasRad  = sports.includes('rad');
+    const hasSchwimm = sports.includes('schwimm');
+
+    html += `
+      <h2 class="step-title">Dein <span class="accent">Wettkampf</span>?</h2>
+      <p class="step-desc">Je mehr du angibst, desto smarter wird dein Plan.</p>
+
+      <div class="race-section-label">WETTKAMPF-TYP</div>
+      <div class="race-type-grid">
+        ${hasLauf ? `
+          <div class="race-type-option ${rd.type==='5k'?'selected':''}" onclick="setRaceType('5k')">🏃 5K</div>
+          <div class="race-type-option ${rd.type==='10k'?'selected':''}" onclick="setRaceType('10k')">🏃 10K</div>
+          <div class="race-type-option ${rd.type==='half_marathon'?'selected':''}" onclick="setRaceType('half_marathon')">🏃 Halbmarathon</div>
+          <div class="race-type-option ${rd.type==='marathon'?'selected':''}" onclick="setRaceType('marathon')">🏃 Marathon</div>
+        ` : ''}
+        ${hasRad && !hasSchwimm ? `
+          <div class="race-type-option ${rd.type==='gran_fondo'?'selected':''}" onclick="setRaceType('gran_fondo')">🚴 Gran Fondo</div>
+          <div class="race-type-option ${rd.type==='tt'?'selected':''}" onclick="setRaceType('tt')">🚴 Zeitfahren</div>
+        ` : ''}
+        ${hasLauf && hasRad && hasSchwimm ? `
+          <div class="race-type-option ${rd.type==='sprint_tri'?'selected':''}" onclick="setRaceType('sprint_tri')">🧱 Sprint-Tri</div>
+          <div class="race-type-option ${rd.type==='olympic_tri'?'selected':''}" onclick="setRaceType('olympic_tri')">🧱 Olympic-Tri</div>
+          <div class="race-type-option ${rd.type==='half_tri'?'selected':''}" onclick="setRaceType('half_tri')">🧱 Half (70.3)</div>
+          <div class="race-type-option ${rd.type==='full_tri'?'selected':''}" onclick="setRaceType('full_tri')">🧱 Full (IM)</div>
+        ` : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:20px;">WETTKAMPF-DATUM</div>
+      <input type="date" id="race-date-input"
+        value="${rd.date || ''}" min="${fmt(minDate)}" max="${fmt(maxDate)}"
+        style="width:100%;background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;
+          padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:16px;
+          color:var(--text-primary);outline:none;"
+        onchange="setRaceDate(this.value)">
+      <div id="race-weeks-hint" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);margin-top:8px;min-height:16px;">
+        ${rd.date ? _weeksUntilText(rd.date) : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:20px;">BESTE ZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="pb-h" min="0" max="9" placeholder="h" value="${rd.currentPB?.hours??''}" oninput="updateRacePB()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="pb-m" min="0" max="59" placeholder="mm" value="${rd.currentPB?.minutes??''}" oninput="updateRacePB()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="pb-s" min="0" max="59" placeholder="ss" value="${rd.currentPB?.seconds??''}" oninput="updateRacePB()">
+      </div>
+
+      <div class="race-section-label" style="margin-top:16px;">ZIELZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="goal-h" min="0" max="9" placeholder="h" value="${rd.goalTime?.hours??''}" oninput="updateRaceGoal()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="goal-m" min="0" max="59" placeholder="mm" value="${rd.goalTime?.minutes??''}" oninput="updateRaceGoal()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="goal-s" min="0" max="59" placeholder="ss" value="${rd.goalTime?.seconds??''}" oninput="updateRaceGoal()">
+      </div>
+      <div id="pace-preview" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted);margin-top:8px;min-height:16px;">
+        ${rd.goalTime || rd.currentPB ? _pacePreviewText() : ''}
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="prevStep()">Zurück</button>
+        <button class="btn btn-primary" id="onboarding-next-btn" onclick="nextStep()" ${!rd.type||!rd.date?'disabled':''}>Weiter</button>
+      </div>
+    </div>
+    `;
+  }
+
   else if (step === 'volume') {
     const vol = state.onboardingData.weeklyVolume;
     const sports = state.onboardingData.sports;
@@ -743,11 +1139,21 @@ function renderOnboarding() {
     </div>
     `;
     setTimeout(() => {
-      state.currentPlan = generate4WeekPlan(state.onboardingData);
-      state.user = {
-        name: state.onboardingData.name || 'Athlet',
-        ...state.onboardingData
-      };
+      const od = state.onboardingData;
+      // Compute weeksUntilRace if race data present
+      if (od.goal === 'race' && od.raceData?.date) {
+        od.raceData.weeksUntilRace = getWeeksUntilRace({ race: od.raceData }, 0);
+        od.race = od.raceData;
+      }
+      // Triathlon: auto-add missing sports if user confirms
+      const isTriGoal = od.goal === 'race' && od.raceData?.type?.includes('tri');
+      if (isTriGoal) {
+        ['lauf', 'rad', 'schwimm'].forEach(s => { if (!od.sports.includes(s)) od.sports.push(s); });
+        const triVol = CONFIG.TRIATHLON_VOLUMES[od.raceData.type] || {};
+        Object.keys(triVol).forEach(k => { if (!od.weeklyVolume[k]) od.weeklyVolume[k] = triVol[k]; });
+      }
+      state.currentPlan = generate4WeekPlan(od);
+      state.user = { name: od.name || 'Athlet', ...od };
       state.viewingWeekIndex = 0;
       saveState();
       state.onboardingStep++;
@@ -773,8 +1179,22 @@ function renderOnboarding() {
   content.innerHTML = html;
 }
 
-function nextStep() { state.onboardingStep++; renderOnboarding(); }
-function prevStep() { if (state.onboardingStep > 0) { state.onboardingStep--; renderOnboarding(); } }
+function nextStep() {
+  state.onboardingStep++;
+  while (state.onboardingStep < ONBOARDING_STEPS.length && shouldSkipStep(ONBOARDING_STEPS[state.onboardingStep])) {
+    state.onboardingStep++;
+  }
+  renderOnboarding();
+}
+
+function prevStep() {
+  if (state.onboardingStep <= 0) return;
+  state.onboardingStep--;
+  while (state.onboardingStep > 0 && shouldSkipStep(ONBOARDING_STEPS[state.onboardingStep])) {
+    state.onboardingStep--;
+  }
+  renderOnboarding();
+}
 
 function toggleSport(sport) {
   const sports = state.onboardingData.sports;
@@ -808,6 +1228,70 @@ function setGoal(goal) {
   state.onboardingData.goal = goal;
   document.querySelectorAll('.choice[data-choice-group="goal"]').forEach(c =>
     c.classList.toggle('selected', c.dataset.choiceValue === goal));
+}
+
+// Race Setup helpers
+function _weeksUntilText(dateStr) {
+  if (!dateStr) return '';
+  const weeks = Math.ceil((new Date(dateStr + 'T00:00:00') - new Date()) / (7 * 24 * 60 * 60 * 1000));
+  if (weeks <= 0) return '⚠ Datum liegt in der Vergangenheit';
+  return `${weeks} Wochen bis zum Event · Phase: ${CONFIG.PHASE_UI[getTrainingPhase({ goal: 'race', race: { date: dateStr } }, 0)].label}`;
+}
+
+function _pacePreviewText() {
+  const rd = state.onboardingData.raceData || {};
+  const paces = calculatePaces({ experience: state.onboardingData.experience, race: { type: rd.type, goalTime: rd.goalTime, currentPB: rd.currentPB } });
+  const ep = formatPace(paces.easy);
+  const tp = formatPace(paces.tempo);
+  if (!ep && !tp) return '';
+  return `Easy: ${ep||'–'} · Tempo: ${tp||'–'} · Race: ${formatPace(paces.halfMarathon)||'–'}`;
+}
+
+function setRaceType(type) {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  state.onboardingData.raceData.type = type;
+  document.querySelectorAll('.race-type-option').forEach(el => {
+    el.classList.toggle('selected', el.textContent.trim().toLowerCase().includes(type.replace('_', ' ')) ||
+      el.getAttribute('onclick')?.includes(`'${type}'`));
+  });
+  _updateRaceNextBtn();
+}
+
+function setRaceDate(dateStr) {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  state.onboardingData.raceData.date = dateStr;
+  const hint = document.getElementById('race-weeks-hint');
+  if (hint) hint.textContent = _weeksUntilText(dateStr);
+  _updateRaceNextBtn();
+}
+
+function updateRacePB() {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  const h = parseInt(document.getElementById('pb-h')?.value) || 0;
+  const m = parseInt(document.getElementById('pb-m')?.value) || 0;
+  const s = parseInt(document.getElementById('pb-s')?.value) || 0;
+  state.onboardingData.raceData.currentPB = (h || m || s) ? { hours: h, minutes: m, seconds: s } : null;
+  _updatePacePreview();
+}
+
+function updateRaceGoal() {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  const h = parseInt(document.getElementById('goal-h')?.value) || 0;
+  const m = parseInt(document.getElementById('goal-m')?.value) || 0;
+  const s = parseInt(document.getElementById('goal-s')?.value) || 0;
+  state.onboardingData.raceData.goalTime = (h || m || s) ? { hours: h, minutes: m, seconds: s } : null;
+  _updatePacePreview();
+}
+
+function _updatePacePreview() {
+  const el = document.getElementById('pace-preview');
+  if (el) el.textContent = _pacePreviewText();
+}
+
+function _updateRaceNextBtn() {
+  const rd = state.onboardingData.raceData || {};
+  const btn = document.getElementById('onboarding-next-btn');
+  if (btn) btn.disabled = !rd.type || !rd.date;
 }
 
 function updateVolume(sport, val) {
@@ -940,17 +1424,53 @@ function renderHome() {
   const weekLabel = `KW ${week.weekNumber} · ${weekStart.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })} – ${weekEnd.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })}`;
 
   const today = isCurrentWeek ? week.days[todayIdx] : null;
-  
+
+  // Phase info for viewed week
+  const weekOffset = state.viewingWeekIndex - findCurrentWeekIndex();
+  const phase = getTrainingPhase(state.user, weekOffset);
+  const phaseUI = CONFIG.PHASE_UI[phase] || CONFIG.PHASE_UI.base;
+  const weeksUntil = getWeeksUntilRace(state.user, weekOffset);
+  const phaseSubline = (() => {
+    if (phase === 'post_race') return 'Race vorbei — Zeit für Erholung und neues Ziel';
+    if (weeksUntil !== null) return `${weeksUntil} Woche${weeksUntil !== 1 ? 'n' : ''} bis Race`;
+    return phaseUI.desc;
+  })();
+
+  // Phase timeline (nur wenn Race-Datum gesetzt)
+  const phaseTimeline = (() => {
+    if (!state.user?.race?.date || phase === 'post_race') return '';
+    const totalWeeks = Math.max(weeksUntil || 0, 1);
+    const phases = ['base', 'build', 'peak', 'taper'];
+    const thresholds = { base: Infinity, build: CONFIG.PHASE_THRESHOLDS.BUILD, peak: CONFIG.PHASE_THRESHOLDS.PEAK, taper: CONFIG.PHASE_THRESHOLDS.TAPER };
+    const segments = phases.map(p => ({
+      label: CONFIG.PHASE_UI[p].label,
+      color: CONFIG.PHASE_UI[p].color,
+      active: p === phase
+    }));
+    const segHTML = segments.map(s => `
+      <div class="timeline-seg ${s.active ? 'active' : ''}" style="background:${s.color}${s.active ? '' : '33'};flex:1;">
+        <span class="timeline-seg-label">${s.label}</span>
+      </div>
+    `).join('');
+    return `<div class="phase-timeline">${segHTML}</div>`;
+  })();
+
   let html = `
     <div class="dashboard-greeting">
       <div class="greeting-tag">${isCurrentWeek ? new Date().toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' }) : weekLabel}</div>
       <div class="greeting-text">${isCurrentWeek ? `${getGreeting()}, <span class="accent">${state.user.name}</span>.` : `Woche <span class="accent">${week.weekNumber}</span>`}</div>
     </div>
 
+    <div class="phase-indicator" style="border-color:${phaseUI.color};">
+      <div class="phase-badge" style="background:${phaseUI.color};">${phaseUI.label}</div>
+      <div class="phase-text">${phaseSubline}</div>
+    </div>
+    ${phaseTimeline}
+
     <div class="week-nav">
       <button class="week-nav-btn" onclick="navigateWeek(-1)" ${state.viewingWeekIndex === 0 ? 'disabled' : ''}>←</button>
       <div class="week-nav-label">${isCurrentWeek ? 'Diese Woche' : weekLabel}</div>
-      <button class="week-nav-btn" onclick="navigateWeek(1)" ${state.viewingWeekIndex >= state.currentPlan.length - 1 ? 'disabled' : ''}>→</button>
+      <button class="week-nav-btn" onclick="navigateWeek(1)" ${state.currentPlan.length >= CONFIG.MAX_PLAN_WEEKS && state.viewingWeekIndex >= state.currentPlan.length - 1 ? 'disabled' : ''}>→</button>
     </div>
 
     <div class="stats-bar">
@@ -1069,7 +1589,21 @@ function renderHome() {
 
 function navigateWeek(dir) {
   const next = state.viewingWeekIndex + dir;
-  if (next < 0 || next >= state.currentPlan.length) return;
+  if (next < 0) return;
+  // Just-in-time: generate the next week if we're navigating beyond what's planned
+  if (next >= state.currentPlan.length) {
+    if (state.currentPlan.length >= CONFIG.MAX_PLAN_WEEKS) return; // hard cap
+    const lastWeek = state.currentPlan[state.currentPlan.length - 1];
+    const newStart = new Date(lastWeek.startDate + 'T00:00:00');
+    newStart.setDate(newStart.getDate() + 7);
+    const newWeekIdx = state.currentPlan.length; // offset from current week
+    state.currentPlan.push({
+      weekNumber: state.currentPlan.length + 1,
+      startDate: newStart.toISOString().split('T')[0],
+      days: generatePlan({ ...state.user, _weekIndex: newWeekIdx })
+    });
+    saveState();
+  }
   state.viewingWeekIndex = next;
   renderHome();
 }
@@ -1868,6 +2402,26 @@ function renderProfile() {
       }</div>
     </div>
 
+    ${u.goal === 'race' ? (() => {
+      const r = u.race;
+      const raceTypeLabels = { '5k':'5K','10k':'10K','half_marathon':'Halbmarathon','marathon':'Marathon','sprint_tri':'Sprint-Triathlon','olympic_tri':'Olympic-Tri','half_tri':'Half Ironman 70.3','full_tri':'Full Ironman','gran_fondo':'Gran Fondo','tt':'Zeitfahren' };
+      const wks = r?.date ? getWeeksUntilRace(u, 0) : null;
+      const phase = getTrainingPhase(u, 0);
+      const phaseUI = CONFIG.PHASE_UI[phase];
+      return `
+      <div class="stat-card-big race-card">
+        <div class="profile-card-header">
+          <div class="stat-card-label">WETTKAMPF</div>
+          ${editBtn('editRaceSetup()')}
+        </div>
+        ${r?.type ? `<div style="font-size:15px;font-weight:600;margin-top:8px;">🏁 ${raceTypeLabels[r.type]||r.type}</div>` : '<div style="font-size:14px;color:var(--text-muted);margin-top:8px;">Noch nicht eingerichtet</div>'}
+        ${r?.date ? `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-secondary);margin-top:4px;">${new Date(r.date+'T00:00:00').toLocaleDateString('de-CH',{day:'numeric',month:'long',year:'numeric'})} · ${wks !== null && wks >= 0 ? wks+' Wochen' : 'vorbei'}</div>` : ''}
+        ${phase !== 'post_race' && r?.date ? `<div style="display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:700;margin-top:8px;background:${phaseUI.color}22;color:${phaseUI.color};border:1px solid ${phaseUI.color}55;">${phaseUI.label}</div>` : ''}
+        ${r?.goalTime ? `<div style="font-size:13px;color:var(--text-secondary);margin-top:8px;">Ziel: ${r.goalTime.hours?r.goalTime.hours+'h ':''}${r.goalTime.minutes}:${String(r.goalTime.seconds||0).padStart(2,'0')}</div>` : ''}
+        ${phase === 'post_race' ? `<div class="btn btn-secondary" style="margin-top:12px;font-size:13px;" onclick="clearRace()">Neues Race-Ziel setzen</div>` : ''}
+      </div>`;
+    })() : ''}
+
     <div class="stat-card-big">
       <div class="profile-card-header">
         <div class="stat-card-label">LEVEL</div>
@@ -2113,6 +2667,103 @@ function resetApp() {
 }
 
 // --- Retro Logger ---
+
+function editRaceSetup() {
+  const u = state.user;
+  const r = u.race || {};
+  const today = new Date();
+  const minDate = new Date(today); minDate.setDate(today.getDate() + 14);
+  const maxDate = new Date(today); maxDate.setFullYear(today.getFullYear() + 2);
+  const fmt = d => d.toISOString().split('T')[0];
+  const sports = u.sports || [];
+  const hasLauf = sports.includes('lauf');
+  const hasRad  = sports.includes('rad');
+  const hasSchwimm = sports.includes('schwimm');
+
+  showModal(`
+    <div class="modal-body">
+      <div class="race-section-label">WETTKAMPF-TYP</div>
+      <div class="race-type-grid" id="profile-race-grid">
+        ${hasLauf ? `
+          <div class="race-type-option ${r.type==='5k'?'selected':''}" onclick="_selectProfileRaceType('5k',this)">🏃 5K</div>
+          <div class="race-type-option ${r.type==='10k'?'selected':''}" onclick="_selectProfileRaceType('10k',this)">🏃 10K</div>
+          <div class="race-type-option ${r.type==='half_marathon'?'selected':''}" onclick="_selectProfileRaceType('half_marathon',this)">🏃 Halbmarathon</div>
+          <div class="race-type-option ${r.type==='marathon'?'selected':''}" onclick="_selectProfileRaceType('marathon',this)">🏃 Marathon</div>
+        ` : ''}
+        ${hasRad && !hasSchwimm ? `
+          <div class="race-type-option ${r.type==='gran_fondo'?'selected':''}" onclick="_selectProfileRaceType('gran_fondo',this)">🚴 Gran Fondo</div>
+          <div class="race-type-option ${r.type==='tt'?'selected':''}" onclick="_selectProfileRaceType('tt',this)">🚴 Zeitfahren</div>
+        ` : ''}
+        ${hasLauf && hasRad && hasSchwimm ? `
+          <div class="race-type-option ${r.type==='sprint_tri'?'selected':''}" onclick="_selectProfileRaceType('sprint_tri',this)">🧱 Sprint-Tri</div>
+          <div class="race-type-option ${r.type==='olympic_tri'?'selected':''}" onclick="_selectProfileRaceType('olympic_tri',this)">🧱 Olympic-Tri</div>
+          <div class="race-type-option ${r.type==='half_tri'?'selected':''}" onclick="_selectProfileRaceType('half_tri',this)">🧱 Half (70.3)</div>
+          <div class="race-type-option ${r.type==='full_tri'?'selected':''}" onclick="_selectProfileRaceType('full_tri',this)">🧱 Full (IM)</div>
+        ` : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:16px;">WETTKAMPF-DATUM</div>
+      <input type="date" id="er-race-date" value="${r.date||''}" min="${fmt(minDate)}" max="${fmt(maxDate)}"
+        style="width:100%;background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;
+          padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:15px;color:var(--text-primary);outline:none;"
+        onchange="document.getElementById('er-weeks-hint').textContent=_weeksUntilText(this.value)">
+      <div id="er-weeks-hint" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);margin-top:6px;min-height:16px;">
+        ${r.date ? _weeksUntilText(r.date) : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:16px;">BESTE ZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="er-pb-h" min="0" max="9" placeholder="h" value="${r.currentPB?.hours??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-pb-m" min="0" max="59" placeholder="mm" value="${r.currentPB?.minutes??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-pb-s" min="0" max="59" placeholder="ss" value="${r.currentPB?.seconds??''}">
+      </div>
+
+      <div class="race-section-label" style="margin-top:12px;">ZIELZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="er-goal-h" min="0" max="9" placeholder="h" value="${r.goalTime?.hours??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-goal-m" min="0" max="59" placeholder="mm" value="${r.goalTime?.minutes??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-goal-s" min="0" max="59" placeholder="ss" value="${r.goalTime?.seconds??''}">
+      </div>
+
+      <button class="btn btn-primary" style="margin-top:20px;" onclick="
+        const type = document.querySelector('#profile-race-grid .race-type-option.selected')?.getAttribute('data-race-type');
+        const date = document.getElementById('er-race-date')?.value;
+        if (!type||!date) { showToast('Race-Typ und Datum angeben'); return; }
+        const pbH=parseInt(document.getElementById('er-pb-h')?.value)||0;
+        const pbM=parseInt(document.getElementById('er-pb-m')?.value)||0;
+        const pbS=parseInt(document.getElementById('er-pb-s')?.value)||0;
+        const gH=parseInt(document.getElementById('er-goal-h')?.value)||0;
+        const gM=parseInt(document.getElementById('er-goal-m')?.value)||0;
+        const gS=parseInt(document.getElementById('er-goal-s')?.value)||0;
+        const race={type,date,weeksUntilRace:getWeeksUntilRace({race:{date}},0),
+          currentPB:(pbH||pbM||pbS)?{hours:pbH,minutes:pbM,seconds:pbS}:null,
+          goalTime:(gH||gM||gS)?{hours:gH,minutes:gM,seconds:gS}:null};
+        _saveProfileAndRegenerate({race,raceData:race,goal:'race'},'Wettkampf gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Wettkampf-Setup');
+}
+
+function _selectProfileRaceType(type, el) {
+  document.querySelectorAll('#profile-race-grid .race-type-option').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  el.setAttribute('data-race-type', type);
+}
+
+function clearRace() {
+  if (!confirm('Race-Daten löschen und zurück zu Basis-Phase?')) return;
+  state.user.race = null;
+  state.user.raceData = null;
+  state.currentPlan = generate4WeekPlan(state.user);
+  state.viewingWeekIndex = findCurrentWeekIndex();
+  saveState();
+  showToast('Race gelöscht — zurück zu BASE Phase');
+  renderProfile();
+}
 
 function openRetroLogger() {
   const today = new Date();
