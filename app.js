@@ -1424,17 +1424,53 @@ function renderHome() {
   const weekLabel = `KW ${week.weekNumber} · ${weekStart.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })} – ${weekEnd.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })}`;
 
   const today = isCurrentWeek ? week.days[todayIdx] : null;
-  
+
+  // Phase info for viewed week
+  const weekOffset = state.viewingWeekIndex - findCurrentWeekIndex();
+  const phase = getTrainingPhase(state.user, weekOffset);
+  const phaseUI = CONFIG.PHASE_UI[phase] || CONFIG.PHASE_UI.base;
+  const weeksUntil = getWeeksUntilRace(state.user, weekOffset);
+  const phaseSubline = (() => {
+    if (phase === 'post_race') return 'Race vorbei — Zeit für Erholung und neues Ziel';
+    if (weeksUntil !== null) return `${weeksUntil} Woche${weeksUntil !== 1 ? 'n' : ''} bis Race`;
+    return phaseUI.desc;
+  })();
+
+  // Phase timeline (nur wenn Race-Datum gesetzt)
+  const phaseTimeline = (() => {
+    if (!state.user?.race?.date || phase === 'post_race') return '';
+    const totalWeeks = Math.max(weeksUntil || 0, 1);
+    const phases = ['base', 'build', 'peak', 'taper'];
+    const thresholds = { base: Infinity, build: CONFIG.PHASE_THRESHOLDS.BUILD, peak: CONFIG.PHASE_THRESHOLDS.PEAK, taper: CONFIG.PHASE_THRESHOLDS.TAPER };
+    const segments = phases.map(p => ({
+      label: CONFIG.PHASE_UI[p].label,
+      color: CONFIG.PHASE_UI[p].color,
+      active: p === phase
+    }));
+    const segHTML = segments.map(s => `
+      <div class="timeline-seg ${s.active ? 'active' : ''}" style="background:${s.color}${s.active ? '' : '33'};flex:1;">
+        <span class="timeline-seg-label">${s.label}</span>
+      </div>
+    `).join('');
+    return `<div class="phase-timeline">${segHTML}</div>`;
+  })();
+
   let html = `
     <div class="dashboard-greeting">
       <div class="greeting-tag">${isCurrentWeek ? new Date().toLocaleDateString('de-CH', { weekday: 'long', day: 'numeric', month: 'long' }) : weekLabel}</div>
       <div class="greeting-text">${isCurrentWeek ? `${getGreeting()}, <span class="accent">${state.user.name}</span>.` : `Woche <span class="accent">${week.weekNumber}</span>`}</div>
     </div>
 
+    <div class="phase-indicator" style="border-color:${phaseUI.color};">
+      <div class="phase-badge" style="background:${phaseUI.color};">${phaseUI.label}</div>
+      <div class="phase-text">${phaseSubline}</div>
+    </div>
+    ${phaseTimeline}
+
     <div class="week-nav">
       <button class="week-nav-btn" onclick="navigateWeek(-1)" ${state.viewingWeekIndex === 0 ? 'disabled' : ''}>←</button>
       <div class="week-nav-label">${isCurrentWeek ? 'Diese Woche' : weekLabel}</div>
-      <button class="week-nav-btn" onclick="navigateWeek(1)" ${state.viewingWeekIndex >= state.currentPlan.length - 1 ? 'disabled' : ''}>→</button>
+      <button class="week-nav-btn" onclick="navigateWeek(1)" ${state.currentPlan.length >= CONFIG.MAX_PLAN_WEEKS && state.viewingWeekIndex >= state.currentPlan.length - 1 ? 'disabled' : ''}>→</button>
     </div>
 
     <div class="stats-bar">
@@ -1553,7 +1589,21 @@ function renderHome() {
 
 function navigateWeek(dir) {
   const next = state.viewingWeekIndex + dir;
-  if (next < 0 || next >= state.currentPlan.length) return;
+  if (next < 0) return;
+  // Just-in-time: generate the next week if we're navigating beyond what's planned
+  if (next >= state.currentPlan.length) {
+    if (state.currentPlan.length >= CONFIG.MAX_PLAN_WEEKS) return; // hard cap
+    const lastWeek = state.currentPlan[state.currentPlan.length - 1];
+    const newStart = new Date(lastWeek.startDate + 'T00:00:00');
+    newStart.setDate(newStart.getDate() + 7);
+    const newWeekIdx = state.currentPlan.length; // offset from current week
+    state.currentPlan.push({
+      weekNumber: state.currentPlan.length + 1,
+      startDate: newStart.toISOString().split('T')[0],
+      days: generatePlan({ ...state.user, _weekIndex: newWeekIdx })
+    });
+    saveState();
+  }
   state.viewingWeekIndex = next;
   renderHome();
 }
