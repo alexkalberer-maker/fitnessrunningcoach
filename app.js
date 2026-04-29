@@ -195,6 +195,8 @@ function loadState() {
 
     // Ensure trainingDays exists on loaded user
     if (state.user && !state.user.trainingDays) state.user.trainingDays = [0, 1, 2, 3, 4];
+    // race field defaults to null for existing users without race setup
+    if (state.user && !('race' in state.user)) state.user.race = null;
 
     state.viewingWeekIndex = findCurrentWeekIndex();
     return true;
@@ -734,12 +736,19 @@ const ONBOARDING_STEPS = [
   'location',
   'experience',
   'goal',
+  'race_setup',   // only shown when goal === 'race'
   'volume',
   'trainingdays',
   'name',
   'generating',
   'complete'
 ];
+
+// Steps that are conditionally skipped
+function shouldSkipStep(step) {
+  if (step === 'race_setup' && state.onboardingData.goal !== 'race') return true;
+  return false;
+}
 
 function renderOnboarding() {
   const step = ONBOARDING_STEPS[state.onboardingStep];
@@ -945,6 +954,81 @@ function renderOnboarding() {
     `;
   }
   
+  else if (step === 'race_setup') {
+    const rd = state.onboardingData.raceData || {};
+    const today = new Date();
+    const minDate = new Date(today); minDate.setDate(today.getDate() + 14);
+    const maxDate = new Date(today); maxDate.setFullYear(today.getFullYear() + 2);
+    const fmt = d => d.toISOString().split('T')[0];
+    const sports = state.onboardingData.sports;
+    const hasLauf = sports.includes('lauf');
+    const hasRad  = sports.includes('rad');
+    const hasSchwimm = sports.includes('schwimm');
+
+    html += `
+      <h2 class="step-title">Dein <span class="accent">Wettkampf</span>?</h2>
+      <p class="step-desc">Je mehr du angibst, desto smarter wird dein Plan.</p>
+
+      <div class="race-section-label">WETTKAMPF-TYP</div>
+      <div class="race-type-grid">
+        ${hasLauf ? `
+          <div class="race-type-option ${rd.type==='5k'?'selected':''}" onclick="setRaceType('5k')">🏃 5K</div>
+          <div class="race-type-option ${rd.type==='10k'?'selected':''}" onclick="setRaceType('10k')">🏃 10K</div>
+          <div class="race-type-option ${rd.type==='half_marathon'?'selected':''}" onclick="setRaceType('half_marathon')">🏃 Halbmarathon</div>
+          <div class="race-type-option ${rd.type==='marathon'?'selected':''}" onclick="setRaceType('marathon')">🏃 Marathon</div>
+        ` : ''}
+        ${hasRad && !hasSchwimm ? `
+          <div class="race-type-option ${rd.type==='gran_fondo'?'selected':''}" onclick="setRaceType('gran_fondo')">🚴 Gran Fondo</div>
+          <div class="race-type-option ${rd.type==='tt'?'selected':''}" onclick="setRaceType('tt')">🚴 Zeitfahren</div>
+        ` : ''}
+        ${hasLauf && hasRad && hasSchwimm ? `
+          <div class="race-type-option ${rd.type==='sprint_tri'?'selected':''}" onclick="setRaceType('sprint_tri')">🧱 Sprint-Tri</div>
+          <div class="race-type-option ${rd.type==='olympic_tri'?'selected':''}" onclick="setRaceType('olympic_tri')">🧱 Olympic-Tri</div>
+          <div class="race-type-option ${rd.type==='half_tri'?'selected':''}" onclick="setRaceType('half_tri')">🧱 Half (70.3)</div>
+          <div class="race-type-option ${rd.type==='full_tri'?'selected':''}" onclick="setRaceType('full_tri')">🧱 Full (IM)</div>
+        ` : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:20px;">WETTKAMPF-DATUM</div>
+      <input type="date" id="race-date-input"
+        value="${rd.date || ''}" min="${fmt(minDate)}" max="${fmt(maxDate)}"
+        style="width:100%;background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;
+          padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:16px;
+          color:var(--text-primary);outline:none;"
+        onchange="setRaceDate(this.value)">
+      <div id="race-weeks-hint" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);margin-top:8px;min-height:16px;">
+        ${rd.date ? _weeksUntilText(rd.date) : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:20px;">BESTE ZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="pb-h" min="0" max="9" placeholder="h" value="${rd.currentPB?.hours??''}" oninput="updateRacePB()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="pb-m" min="0" max="59" placeholder="mm" value="${rd.currentPB?.minutes??''}" oninput="updateRacePB()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="pb-s" min="0" max="59" placeholder="ss" value="${rd.currentPB?.seconds??''}" oninput="updateRacePB()">
+      </div>
+
+      <div class="race-section-label" style="margin-top:16px;">ZIELZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="goal-h" min="0" max="9" placeholder="h" value="${rd.goalTime?.hours??''}" oninput="updateRaceGoal()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="goal-m" min="0" max="59" placeholder="mm" value="${rd.goalTime?.minutes??''}" oninput="updateRaceGoal()">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="goal-s" min="0" max="59" placeholder="ss" value="${rd.goalTime?.seconds??''}" oninput="updateRaceGoal()">
+      </div>
+      <div id="pace-preview" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted);margin-top:8px;min-height:16px;">
+        ${rd.goalTime || rd.currentPB ? _pacePreviewText() : ''}
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="prevStep()">Zurück</button>
+        <button class="btn btn-primary" id="onboarding-next-btn" onclick="nextStep()" ${!rd.type||!rd.date?'disabled':''}>Weiter</button>
+      </div>
+    </div>
+    `;
+  }
+
   else if (step === 'volume') {
     const vol = state.onboardingData.weeklyVolume;
     const sports = state.onboardingData.sports;
@@ -1055,11 +1139,21 @@ function renderOnboarding() {
     </div>
     `;
     setTimeout(() => {
-      state.currentPlan = generate4WeekPlan(state.onboardingData);
-      state.user = {
-        name: state.onboardingData.name || 'Athlet',
-        ...state.onboardingData
-      };
+      const od = state.onboardingData;
+      // Compute weeksUntilRace if race data present
+      if (od.goal === 'race' && od.raceData?.date) {
+        od.raceData.weeksUntilRace = getWeeksUntilRace({ race: od.raceData }, 0);
+        od.race = od.raceData;
+      }
+      // Triathlon: auto-add missing sports if user confirms
+      const isTriGoal = od.goal === 'race' && od.raceData?.type?.includes('tri');
+      if (isTriGoal) {
+        ['lauf', 'rad', 'schwimm'].forEach(s => { if (!od.sports.includes(s)) od.sports.push(s); });
+        const triVol = CONFIG.TRIATHLON_VOLUMES[od.raceData.type] || {};
+        Object.keys(triVol).forEach(k => { if (!od.weeklyVolume[k]) od.weeklyVolume[k] = triVol[k]; });
+      }
+      state.currentPlan = generate4WeekPlan(od);
+      state.user = { name: od.name || 'Athlet', ...od };
       state.viewingWeekIndex = 0;
       saveState();
       state.onboardingStep++;
@@ -1085,8 +1179,22 @@ function renderOnboarding() {
   content.innerHTML = html;
 }
 
-function nextStep() { state.onboardingStep++; renderOnboarding(); }
-function prevStep() { if (state.onboardingStep > 0) { state.onboardingStep--; renderOnboarding(); } }
+function nextStep() {
+  state.onboardingStep++;
+  while (state.onboardingStep < ONBOARDING_STEPS.length && shouldSkipStep(ONBOARDING_STEPS[state.onboardingStep])) {
+    state.onboardingStep++;
+  }
+  renderOnboarding();
+}
+
+function prevStep() {
+  if (state.onboardingStep <= 0) return;
+  state.onboardingStep--;
+  while (state.onboardingStep > 0 && shouldSkipStep(ONBOARDING_STEPS[state.onboardingStep])) {
+    state.onboardingStep--;
+  }
+  renderOnboarding();
+}
 
 function toggleSport(sport) {
   const sports = state.onboardingData.sports;
@@ -1120,6 +1228,70 @@ function setGoal(goal) {
   state.onboardingData.goal = goal;
   document.querySelectorAll('.choice[data-choice-group="goal"]').forEach(c =>
     c.classList.toggle('selected', c.dataset.choiceValue === goal));
+}
+
+// Race Setup helpers
+function _weeksUntilText(dateStr) {
+  if (!dateStr) return '';
+  const weeks = Math.ceil((new Date(dateStr + 'T00:00:00') - new Date()) / (7 * 24 * 60 * 60 * 1000));
+  if (weeks <= 0) return '⚠ Datum liegt in der Vergangenheit';
+  return `${weeks} Wochen bis zum Event · Phase: ${CONFIG.PHASE_UI[getTrainingPhase({ goal: 'race', race: { date: dateStr } }, 0)].label}`;
+}
+
+function _pacePreviewText() {
+  const rd = state.onboardingData.raceData || {};
+  const paces = calculatePaces({ experience: state.onboardingData.experience, race: { type: rd.type, goalTime: rd.goalTime, currentPB: rd.currentPB } });
+  const ep = formatPace(paces.easy);
+  const tp = formatPace(paces.tempo);
+  if (!ep && !tp) return '';
+  return `Easy: ${ep||'–'} · Tempo: ${tp||'–'} · Race: ${formatPace(paces.halfMarathon)||'–'}`;
+}
+
+function setRaceType(type) {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  state.onboardingData.raceData.type = type;
+  document.querySelectorAll('.race-type-option').forEach(el => {
+    el.classList.toggle('selected', el.textContent.trim().toLowerCase().includes(type.replace('_', ' ')) ||
+      el.getAttribute('onclick')?.includes(`'${type}'`));
+  });
+  _updateRaceNextBtn();
+}
+
+function setRaceDate(dateStr) {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  state.onboardingData.raceData.date = dateStr;
+  const hint = document.getElementById('race-weeks-hint');
+  if (hint) hint.textContent = _weeksUntilText(dateStr);
+  _updateRaceNextBtn();
+}
+
+function updateRacePB() {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  const h = parseInt(document.getElementById('pb-h')?.value) || 0;
+  const m = parseInt(document.getElementById('pb-m')?.value) || 0;
+  const s = parseInt(document.getElementById('pb-s')?.value) || 0;
+  state.onboardingData.raceData.currentPB = (h || m || s) ? { hours: h, minutes: m, seconds: s } : null;
+  _updatePacePreview();
+}
+
+function updateRaceGoal() {
+  if (!state.onboardingData.raceData) state.onboardingData.raceData = {};
+  const h = parseInt(document.getElementById('goal-h')?.value) || 0;
+  const m = parseInt(document.getElementById('goal-m')?.value) || 0;
+  const s = parseInt(document.getElementById('goal-s')?.value) || 0;
+  state.onboardingData.raceData.goalTime = (h || m || s) ? { hours: h, minutes: m, seconds: s } : null;
+  _updatePacePreview();
+}
+
+function _updatePacePreview() {
+  const el = document.getElementById('pace-preview');
+  if (el) el.textContent = _pacePreviewText();
+}
+
+function _updateRaceNextBtn() {
+  const rd = state.onboardingData.raceData || {};
+  const btn = document.getElementById('onboarding-next-btn');
+  if (btn) btn.disabled = !rd.type || !rd.date;
 }
 
 function updateVolume(sport, val) {
