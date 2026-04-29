@@ -219,10 +219,11 @@ function generatePlan(data) {
     ? [...data.trainingDays].sort((a, b) => a - b)
     : [0, 1, 2, 3, 4, 5, 6];
 
-  const nKraft  = data.weeklyVolume.kraft  || 0;
-  const nLauf   = data.weeklyVolume.lauf   || 0;
-  const nRad    = data.weeklyVolume.rad    || 0;
-  const nSchwimm = data.weeklyVolume.schwimm || 0;
+  const hasSport = s => !data.sports || data.sports.includes(s);
+  const nKraft   = hasSport('kraft')  ? (data.weeklyVolume.kraft  || 0) : 0;
+  const nLauf    = hasSport('lauf')   ? (data.weeklyVolume.lauf   || 0) : 0;
+  const nRad     = hasSport('rad')    ? (data.weeklyVolume.rad    || 0) : 0;
+  const nSchwimm = hasSport('schwimm')? (data.weeklyVolume.schwimm || 0) : 0;
   const weekIdx = data._weekIndex || 0;
 
   // Pick n evenly-spread indices from tDays, honouring exclusions
