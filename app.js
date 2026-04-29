@@ -2402,6 +2402,26 @@ function renderProfile() {
       }</div>
     </div>
 
+    ${u.goal === 'race' ? (() => {
+      const r = u.race;
+      const raceTypeLabels = { '5k':'5K','10k':'10K','half_marathon':'Halbmarathon','marathon':'Marathon','sprint_tri':'Sprint-Triathlon','olympic_tri':'Olympic-Tri','half_tri':'Half Ironman 70.3','full_tri':'Full Ironman','gran_fondo':'Gran Fondo','tt':'Zeitfahren' };
+      const wks = r?.date ? getWeeksUntilRace(u, 0) : null;
+      const phase = getTrainingPhase(u, 0);
+      const phaseUI = CONFIG.PHASE_UI[phase];
+      return `
+      <div class="stat-card-big race-card">
+        <div class="profile-card-header">
+          <div class="stat-card-label">WETTKAMPF</div>
+          ${editBtn('editRaceSetup()')}
+        </div>
+        ${r?.type ? `<div style="font-size:15px;font-weight:600;margin-top:8px;">🏁 ${raceTypeLabels[r.type]||r.type}</div>` : '<div style="font-size:14px;color:var(--text-muted);margin-top:8px;">Noch nicht eingerichtet</div>'}
+        ${r?.date ? `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-secondary);margin-top:4px;">${new Date(r.date+'T00:00:00').toLocaleDateString('de-CH',{day:'numeric',month:'long',year:'numeric'})} · ${wks !== null && wks >= 0 ? wks+' Wochen' : 'vorbei'}</div>` : ''}
+        ${phase !== 'post_race' && r?.date ? `<div style="display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:700;margin-top:8px;background:${phaseUI.color}22;color:${phaseUI.color};border:1px solid ${phaseUI.color}55;">${phaseUI.label}</div>` : ''}
+        ${r?.goalTime ? `<div style="font-size:13px;color:var(--text-secondary);margin-top:8px;">Ziel: ${r.goalTime.hours?r.goalTime.hours+'h ':''}${r.goalTime.minutes}:${String(r.goalTime.seconds||0).padStart(2,'0')}</div>` : ''}
+        ${phase === 'post_race' ? `<div class="btn btn-secondary" style="margin-top:12px;font-size:13px;" onclick="clearRace()">Neues Race-Ziel setzen</div>` : ''}
+      </div>`;
+    })() : ''}
+
     <div class="stat-card-big">
       <div class="profile-card-header">
         <div class="stat-card-label">LEVEL</div>
@@ -2647,6 +2667,103 @@ function resetApp() {
 }
 
 // --- Retro Logger ---
+
+function editRaceSetup() {
+  const u = state.user;
+  const r = u.race || {};
+  const today = new Date();
+  const minDate = new Date(today); minDate.setDate(today.getDate() + 14);
+  const maxDate = new Date(today); maxDate.setFullYear(today.getFullYear() + 2);
+  const fmt = d => d.toISOString().split('T')[0];
+  const sports = u.sports || [];
+  const hasLauf = sports.includes('lauf');
+  const hasRad  = sports.includes('rad');
+  const hasSchwimm = sports.includes('schwimm');
+
+  showModal(`
+    <div class="modal-body">
+      <div class="race-section-label">WETTKAMPF-TYP</div>
+      <div class="race-type-grid" id="profile-race-grid">
+        ${hasLauf ? `
+          <div class="race-type-option ${r.type==='5k'?'selected':''}" onclick="_selectProfileRaceType('5k',this)">🏃 5K</div>
+          <div class="race-type-option ${r.type==='10k'?'selected':''}" onclick="_selectProfileRaceType('10k',this)">🏃 10K</div>
+          <div class="race-type-option ${r.type==='half_marathon'?'selected':''}" onclick="_selectProfileRaceType('half_marathon',this)">🏃 Halbmarathon</div>
+          <div class="race-type-option ${r.type==='marathon'?'selected':''}" onclick="_selectProfileRaceType('marathon',this)">🏃 Marathon</div>
+        ` : ''}
+        ${hasRad && !hasSchwimm ? `
+          <div class="race-type-option ${r.type==='gran_fondo'?'selected':''}" onclick="_selectProfileRaceType('gran_fondo',this)">🚴 Gran Fondo</div>
+          <div class="race-type-option ${r.type==='tt'?'selected':''}" onclick="_selectProfileRaceType('tt',this)">🚴 Zeitfahren</div>
+        ` : ''}
+        ${hasLauf && hasRad && hasSchwimm ? `
+          <div class="race-type-option ${r.type==='sprint_tri'?'selected':''}" onclick="_selectProfileRaceType('sprint_tri',this)">🧱 Sprint-Tri</div>
+          <div class="race-type-option ${r.type==='olympic_tri'?'selected':''}" onclick="_selectProfileRaceType('olympic_tri',this)">🧱 Olympic-Tri</div>
+          <div class="race-type-option ${r.type==='half_tri'?'selected':''}" onclick="_selectProfileRaceType('half_tri',this)">🧱 Half (70.3)</div>
+          <div class="race-type-option ${r.type==='full_tri'?'selected':''}" onclick="_selectProfileRaceType('full_tri',this)">🧱 Full (IM)</div>
+        ` : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:16px;">WETTKAMPF-DATUM</div>
+      <input type="date" id="er-race-date" value="${r.date||''}" min="${fmt(minDate)}" max="${fmt(maxDate)}"
+        style="width:100%;background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;
+          padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:15px;color:var(--text-primary);outline:none;"
+        onchange="document.getElementById('er-weeks-hint').textContent=_weeksUntilText(this.value)">
+      <div id="er-weeks-hint" style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);margin-top:6px;min-height:16px;">
+        ${r.date ? _weeksUntilText(r.date) : ''}
+      </div>
+
+      <div class="race-section-label" style="margin-top:16px;">BESTE ZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="er-pb-h" min="0" max="9" placeholder="h" value="${r.currentPB?.hours??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-pb-m" min="0" max="59" placeholder="mm" value="${r.currentPB?.minutes??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-pb-s" min="0" max="59" placeholder="ss" value="${r.currentPB?.seconds??''}">
+      </div>
+
+      <div class="race-section-label" style="margin-top:12px;">ZIELZEIT <span style="color:var(--text-muted);font-weight:400;">(optional)</span></div>
+      <div class="time-input-row">
+        <input type="number" class="time-input" id="er-goal-h" min="0" max="9" placeholder="h" value="${r.goalTime?.hours??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-goal-m" min="0" max="59" placeholder="mm" value="${r.goalTime?.minutes??''}">
+        <span class="time-sep">:</span>
+        <input type="number" class="time-input" id="er-goal-s" min="0" max="59" placeholder="ss" value="${r.goalTime?.seconds??''}">
+      </div>
+
+      <button class="btn btn-primary" style="margin-top:20px;" onclick="
+        const type = document.querySelector('#profile-race-grid .race-type-option.selected')?.getAttribute('data-race-type');
+        const date = document.getElementById('er-race-date')?.value;
+        if (!type||!date) { showToast('Race-Typ und Datum angeben'); return; }
+        const pbH=parseInt(document.getElementById('er-pb-h')?.value)||0;
+        const pbM=parseInt(document.getElementById('er-pb-m')?.value)||0;
+        const pbS=parseInt(document.getElementById('er-pb-s')?.value)||0;
+        const gH=parseInt(document.getElementById('er-goal-h')?.value)||0;
+        const gM=parseInt(document.getElementById('er-goal-m')?.value)||0;
+        const gS=parseInt(document.getElementById('er-goal-s')?.value)||0;
+        const race={type,date,weeksUntilRace:getWeeksUntilRace({race:{date}},0),
+          currentPB:(pbH||pbM||pbS)?{hours:pbH,minutes:pbM,seconds:pbS}:null,
+          goalTime:(gH||gM||gS)?{hours:gH,minutes:gM,seconds:gS}:null};
+        _saveProfileAndRegenerate({race,raceData:race,goal:'race'},'Wettkampf gespeichert ✨');
+      ">Speichern</button>
+    </div>
+  `, 'Wettkampf-Setup');
+}
+
+function _selectProfileRaceType(type, el) {
+  document.querySelectorAll('#profile-race-grid .race-type-option').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  el.setAttribute('data-race-type', type);
+}
+
+function clearRace() {
+  if (!confirm('Race-Daten löschen und zurück zu Basis-Phase?')) return;
+  state.user.race = null;
+  state.user.raceData = null;
+  state.currentPlan = generate4WeekPlan(state.user);
+  state.viewingWeekIndex = findCurrentWeekIndex();
+  saveState();
+  showToast('Race gelöscht — zurück zu BASE Phase');
+  renderProfile();
+}
 
 function openRetroLogger() {
   const today = new Date();
